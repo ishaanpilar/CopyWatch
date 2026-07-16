@@ -24,21 +24,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "Copy with CopyWatch". Declared in Info.plist's NSServices; the
     /// selector name must match NSMessage there exactly.
     @objc func copyWithCopyWatch(
-        _ pboard: NSPasteboard, userData: String, error: AutoreleasingUnsafeMutablePointer<NSString?>
+        _ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>
     ) {
         var paths: [String] = []
-        if let items = pboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
-            paths = items
-        } else if let urls = pboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] {
+        // Modern file-URL reading first; fall back to the legacy filenames type.
+        if let urls = pboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] {
             paths = urls.map(\.path)
         }
+        if paths.isEmpty,
+           let items = pboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+            paths = items
+        }
         guard !paths.isEmpty else {
-            error.pointee = "CopyWatch couldn't find any files in that selection." as NSString
+            error.pointee = "CopyWatch couldn't read the selected files." as NSString
             return
         }
-        Task { @MainActor [appState] in
-            appState.handleIncomingSources(paths)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        // Services run on the main thread and this class is @MainActor.
+        appState.handleIncomingSources(paths)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

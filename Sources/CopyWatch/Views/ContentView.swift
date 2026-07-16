@@ -117,14 +117,16 @@ struct ContentView: View {
             DropDestinationSheet(sources: dropped.paths)
         }
         .onChange(of: appState.pendingDrop) { _, paths in
-            guard let paths, !paths.isEmpty else { return }
-            dropSources = paths
-            appState.pendingDrop = nil
+            presentDrop(paths)
         }
         .onAppear {
             // Seed so launch (with existing history) doesn't look like a new
             // drop and auto-navigate away from "No job selected".
             lastNewestJobID = appState.jobs.first?.id
+            // When the Finder service (or a Dock drop) cold-launches the app,
+            // `pendingDrop` is set before this view starts observing, so
+            // `.onChange` never fires — catch that initial value here.
+            presentDrop(appState.pendingDrop)
         }
         .onChange(of: appState.jobs.first?.id) { _, newestID in
             // A drop with a default destination creates and starts a job
@@ -133,6 +135,12 @@ struct ContentView: View {
             lastNewestJobID = newestID
             selection = .job(newestID)
         }
+    }
+
+    private func presentDrop(_ paths: [String]?) {
+        guard let paths, !paths.isEmpty else { return }
+        dropSources = paths
+        appState.pendingDrop = nil
     }
 
     private var emptyState: some View {
