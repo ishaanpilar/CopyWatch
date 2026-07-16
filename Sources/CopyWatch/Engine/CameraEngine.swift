@@ -347,7 +347,7 @@ final class CameraJobEngine: NSObject, JobRunning {
 
     private func emit(force: Bool = false) {
         let now = Date()
-        guard force || now.timeIntervalSince(lastEmit) > 0.25 else { return }
+        guard force || now.timeIntervalSince(lastEmit) > 0.5 else { return }
         lastEmit = now
         onUpdate(job)
     }

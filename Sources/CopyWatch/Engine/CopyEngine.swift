@@ -297,8 +297,10 @@ final class JobEngine: @unchecked Sendable {
     }
 
     private func emit(force: Bool = false) {
+        // 2 Hz keeps progress lively without re-rendering large manifests
+        // (sidebar + file table) faster than the eye needs.
         let now = Date()
-        guard force || now.timeIntervalSince(lastEmit) > 0.25 else { return }
+        guard force || now.timeIntervalSince(lastEmit) > 0.5 else { return }
         lastEmit = now
         onUpdate(job)
     }

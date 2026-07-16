@@ -202,9 +202,18 @@ struct JobDetailView: View {
 
     // MARK: File table
 
+    /// Rows shown in the table. Capped: the table re-diffs on every progress
+    /// tick, and thousands of rows at 2 Hz makes the whole window feel laggy.
+    /// The full manifest is always in the CSV export.
+    static let tableRowCap = 1000
+
     private var filteredFiles: [FileRecord] {
         let files = fileFilter.map { f in job.files.filter { $0.status == f } } ?? job.files
-        return Array(files.prefix(5000))
+        return Array(files.prefix(Self.tableRowCap))
+    }
+
+    private var filteredCount: Int {
+        fileFilter.map { f in job.files.count { $0.status == f } } ?? job.files.count
     }
 
     private var fileTable: some View {
@@ -221,6 +230,11 @@ struct JobDetailView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 Spacer()
+                if filteredCount > Self.tableRowCap {
+                    Text("Showing first \(Self.tableRowCap) of \(filteredCount) — narrow with the filter, or export the CSV for everything.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
