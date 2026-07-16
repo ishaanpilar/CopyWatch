@@ -117,11 +117,10 @@ final class CameraJobEngine: NSObject, JobRunning {
         speedSamples.removeAll()
         emit(force: true)
 
+        // Same path derivation (incl. duplicate-name suffixes) as the manifest,
+        // so every record finds its catalog item.
         let byPath = Dictionary(
-            device.mediaFiles?.compactMap { item -> (String, ICCameraFile)? in
-                guard let file = item as? ICCameraFile else { return nil }
-                return (Self.relativePath(for: file), file)
-            } ?? [],
+            Self.makeRecordPairs(from: device).map { ($0.record.relativePath, $0.file) },
             uniquingKeysWith: { first, _ in first })
 
         for i in job.files.indices where !job.files[i].isDone && job.files[i].status != .failed {
@@ -202,10 +201,10 @@ final class CameraJobEngine: NSObject, JobRunning {
         Self.makeRecords(from: device)
     }
 
-    /// Flatten a device's media catalog into manifest records
-    /// (shared with the pre-job catalog browser).
-    static func makeRecords(from device: ICCameraDevice) -> [FileRecord] {
-        var records: [FileRecord] = []
+    /// Flatten a device's media catalog into manifest records paired with their
+    /// live catalog items (shared with the pre-job catalog browser).
+    static func makeRecordPairs(from device: ICCameraDevice) -> [(record: FileRecord, file: ICCameraFile)] {
+        var pairs: [(record: FileRecord, file: ICCameraFile)] = []
         var seen = Set<String>()
         for item in device.mediaFiles ?? [] {
             guard let file = item as? ICCameraFile else { continue }
@@ -216,13 +215,17 @@ final class CameraJobEngine: NSObject, JobRunning {
                 path = relativePath(for: file) + " (\(n))"
             }
             seen.insert(path)
-            records.append(FileRecord(
+            pairs.append((FileRecord(
                 relativePath: path,
                 size: Int64(file.fileSize),
-                modificationDate: file.modificationDate ?? file.creationDate ?? .distantPast))
+                modificationDate: file.modificationDate ?? file.creationDate ?? .distantPast), file))
         }
-        records.sort { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
-        return records
+        pairs.sort { $0.record.relativePath.localizedStandardCompare($1.record.relativePath) == .orderedAscending }
+        return pairs
+    }
+
+    static func makeRecords(from device: ICCameraDevice) -> [FileRecord] {
+        makeRecordPairs(from: device).map(\.record)
     }
 
     static func relativePath(for file: ICCameraFile) -> String {

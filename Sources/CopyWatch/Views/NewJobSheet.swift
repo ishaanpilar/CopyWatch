@@ -18,58 +18,44 @@ struct NewJobSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New Copy Job").font(.title3.bold())
+        VStack(alignment: .leading, spacing: 14) {
+            Text("New Copy Job").font(.headline)
 
-            pathPicker(
-                label: "Copy from",
-                hint: "Camera card, SSD folder…",
-                path: $sourcePath)
-
-            // iPhones/cameras never appear in the folder picker — they aren't
-            // disks. Route to their catalog-based backup flow instead.
-            if appState.devices.isEmpty {
-                Text("Looking for an iPhone or camera? It won't appear in the folder picker (it's not a disk). Plug it in and it shows up under Devices in the sidebar.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(appState.devices) { device in
-                        Button {
-                            dismiss()
-                            onPickDevice?(device.id)
-                        } label: {
-                            Label("Backing up “\(device.name)”? Use the device flow — pick its folders & files there", systemImage: "iphone")
-                        }
-                        .buttonStyle(.link)
-                    }
-                    Text("iPhones aren't disks, so they can't be chosen as a folder above.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 10) {
+                GridRow {
+                    Text("From").gridColumnAlignment(.trailing)
+                    TextField("Camera card or folder", text: $sourcePath)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Choose…") { choose(into: $sourcePath) }
+                }
+                GridRow {
+                    Text("To")
+                    TextField("Backup folder", text: $destParentPath)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Choose…") { choose(into: $destParentPath) }
                 }
             }
-            pathPicker(
-                label: "Copy into",
-                hint: "Backup drive folder…",
-                path: $destParentPath)
 
             if let preview = destPreview {
-                Label {
-                    Text("Files will land in ") +
-                    Text(preview).font(.caption.monospaced()).bold()
-                } icon: {
-                    Image(systemName: "arrow.turn.down.right")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text("Creates \(preview)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
-            Toggle(isOn: $verify) {
-                VStack(alignment: .leading) {
-                    Text("Verify after copy")
-                    Text("Reads every copied file back and confirms its checksum matches the source.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            HStack {
+                Toggle("Verify after copy", isOn: $verify)
+                    .help("Reads every copied file back and confirms its checksum matches the source")
+                Spacer()
+                ForEach(appState.devices) { device in
+                    Button("Back up “\(device.name)” instead…") {
+                        dismiss()
+                        onPickDevice?(device.id)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("iPhones and cameras aren't disks — they have their own backup flow")
                 }
             }
 
@@ -86,28 +72,18 @@ struct NewJobSheet: View {
                 .disabled(sourcePath.isEmpty || destParentPath.isEmpty || sourcePath == destParentPath)
             }
         }
-        .padding(20)
-        .frame(width: 520)
+        .padding(18)
+        .frame(width: 470)
     }
 
-    private func pathPicker(label: String, hint: String, path: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.headline)
-            HStack {
-                TextField(hint, text: path)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout.monospaced())
-                Button("Choose…") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseDirectories = true
-                    panel.canChooseFiles = false
-                    panel.allowsMultipleSelection = false
-                    panel.prompt = "Select"
-                    if panel.runModal() == .OK, let url = panel.url {
-                        path.wrappedValue = url.path
-                    }
-                }
-            }
+    private func choose(into path: Binding<String>) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        if panel.runModal() == .OK, let url = panel.url {
+            path.wrappedValue = url.path
         }
     }
 }

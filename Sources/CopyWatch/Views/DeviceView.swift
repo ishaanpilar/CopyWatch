@@ -14,6 +14,9 @@ struct DeviceView: View {
     @State private var selected: Set<String> = []   // file relative paths
     @State private var destParentPath = ""
     @State private var verify = true
+    @State private var thumbnails: [String: NSImage] = [:]
+    @State private var thumbnailOrder: [String] = []   // FIFO eviction, memory cap
+    @State private var previewFile: FileRecord?
 
     private var device: CameraDeviceInfo? {
         appState.devices.first { $0.id == deviceID }
@@ -63,9 +66,10 @@ struct DeviceView: View {
                     .foregroundStyle(.blue)
                 VStack(alignment: .leading) {
                     Text(device.name).font(.title2.bold())
-                    Text("Photos & videos (Camera Roll / DCIM) — iPhones don't mount as disks, so media is read through the camera protocol, like Image Capture.")
+                    Text("Photos & videos (Camera Roll / DCIM)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .help("iPhones don't mount as disks — media is read via the camera protocol, like Image Capture")
                 }
             }
             if device.isLocked {
@@ -138,7 +142,7 @@ struct DeviceView: View {
     private var folderList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("\(catalog.totalFiles) files · \(Format.bytes(catalog.totalBytes)) on the device — pick what to back up:")
+                Text("\(catalog.totalFiles) files · \(Format.bytes(catalog.totalBytes)) on the device — tap to select what to back up:")
                     .font(.callout)
                 Spacer()
                 Button("Select All") { selectAll() }
@@ -149,36 +153,63 @@ struct DeviceView: View {
             .padding(.horizontal)
             .padding(.vertical, 8)
 
-            List {
-                ForEach(catalog.folders) { folder in
-                    DisclosureGroup {
-                        ForEach(folder.files) { file in
-                            HStack {
-                                checkbox(isOn: selected.contains(file.relativePath)) {
-                                    toggleFile(file.relativePath)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
+                    ForEach(catalog.folders) { folder in
+                        Section {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 118), spacing: 10)],
+                                spacing: 10
+                            ) {
+                                ForEach(folder.files) { file in
+                                    GalleryCell(
+                                        file: file,
+                                        thumbnail: thumbnails[file.relativePath],
+                                        isSelected: selected.contains(file.relativePath),
+                                        toggle: { toggleFile(file.relativePath) },
+                                        preview: { previewFile = file })
+                                        .onAppear {
+                                            loader?.requestThumbnail(for: file.relativePath)
+                                        }
                                 }
-                                Text((file.relativePath as NSString).lastPathComponent)
+                            }
+                            .padding(.horizontal)
+                            .padding(.bottom, 8)
+                        } header: {
+                            HStack {
+                                checkbox(state: folderState(folder)) { toggleFolder(folder) }
+                                Label(folder.path, systemImage: "folder")
+                                    .font(.callout.bold())
                                 Spacer()
-                                Text(Format.bytes(file.size))
+                                Text("\(folder.files.count) files · \(Format.bytes(folder.totalBytes))")
                                     .foregroundStyle(.secondary)
+                                    .font(.caption)
                                     .monospacedDigit()
                             }
-                            .font(.callout)
-                        }
-                    } label: {
-                        HStack {
-                            checkbox(state: folderState(folder)) { toggleFolder(folder) }
-                            Label(folder.path, systemImage: "folder")
-                            Spacer()
-                            Text("\(folder.files.count) files · \(Format.bytes(folder.totalBytes))")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                                .monospacedDigit()
+                            .padding(.horizontal)
+                            .padding(.vertical, 6)
+                            .background(.background.opacity(0.95))
                         }
                     }
                 }
             }
-            .listStyle(.inset)
+        }
+        .sheet(item: $previewFile) { file in
+            MediaPreviewSheet(
+                file: file,
+                thumbnail: thumbnails[file.relativePath],
+                isSelected: selected.contains(file.relativePath),
+                toggle: { toggleFile(file.relativePath) })
+        }
+    }
+
+    private func storeThumbnail(path: String, image: CGImage) {
+        thumbnails[path] = NSImage(cgImage: image, size: .zero)
+        thumbnailOrder.append(path)
+        // Keep at most ~800 thumbnails in memory; evict the oldest.
+        if thumbnailOrder.count > 800 {
+            let evict = thumbnailOrder.removeFirst()
+            thumbnails[evict] = nil
         }
     }
 
@@ -282,6 +313,9 @@ struct DeviceView: View {
                 selectAll()
             }
         }
+        newLoader.onThumbnail = { path, image in
+            storeThumbnail(path: path, image: image)
+        }
         loader = newLoader
         newLoader.load()
     }
@@ -294,5 +328,134 @@ struct DeviceView: View {
         if panel.runModal() == .OK, let url = panel.url {
             destParentPath = url.path
         }
+    }
+}
+
+// MARK: Gallery
+
+private let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "avi", "hevc", "mts", "3gp"]
+
+/// One media item in the device gallery: thumbnail, selection state, and a
+/// magnifier for quick preview.
+struct GalleryCell: View {
+    let file: FileRecord
+    let thumbnail: NSImage?
+    let isSelected: Bool
+    let toggle: () -> Void
+    let preview: () -> Void
+
+    private var isVideo: Bool {
+        videoExtensions.contains((file.relativePath as NSString).pathExtension.lowercased())
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Button(action: toggle) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.quaternary.opacity(0.5))
+                        .frame(height: 110)
+                    if let thumbnail {
+                        Image(nsImage: thumbnail)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 110)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else {
+                        Image(systemName: isVideo ? "video" : "photo")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(isSelected ? Color.accentColor : .white)
+                        .shadow(radius: 2)
+                        .padding(6)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    Button(action: preview) {
+                        Image(systemName: "magnifyingglass.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.white)
+                            .shadow(radius: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Quick preview")
+                    .padding(6)
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2))
+            }
+            .buttonStyle(.plain)
+
+            Text((file.relativePath as NSString).lastPathComponent)
+                .font(.caption2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text(Format.bytes(file.size))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .opacity(isSelected ? 1 : 0.6)
+    }
+}
+
+/// Quick preview: the device-provided thumbnail at a comfortable size plus the
+/// file's metadata. (Full quality lives on the device until it's backed up.)
+struct MediaPreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let file: FileRecord
+    let thumbnail: NSImage?
+    let isSelected: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 560, maxHeight: 400)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.quaternary)
+                    .frame(width: 400, height: 280)
+                    .overlay(
+                        VStack(spacing: 6) {
+                            ProgressView()
+                            Text("Waiting for the device preview…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        })
+            }
+
+            Text((file.relativePath as NSString).lastPathComponent)
+                .font(.headline)
+            Text("\((file.relativePath as NSString).deletingLastPathComponent)  ·  \(Format.bytes(file.size))  ·  \(file.modificationDate.formatted(date: .abbreviated, time: .shortened))")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text("Preview quality is the device's thumbnail — the full-quality file is transferred during backup.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            HStack {
+                Button(isSelected ? "Remove from Selection" : "Add to Selection") {
+                    toggle()
+                }
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(.top, 4)
+        }
+        .padding(20)
+        .frame(minWidth: 480)
     }
 }

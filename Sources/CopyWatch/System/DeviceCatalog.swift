@@ -28,8 +28,13 @@ struct CatalogSnapshot {
 final class DeviceCatalog: NSObject {
     let device: ICCameraDevice
     var onChange: ((CatalogSnapshot) -> Void)?
+    /// Delivers a thumbnail for a manifest path as the device provides it.
+    var onThumbnail: ((String, CGImage) -> Void)?
     private(set) var snapshot = CatalogSnapshot()
     private var timeoutTask: Task<Void, Never>?
+    private var filesByPath: [String: ICCameraFile] = [:]
+    private var pathsByItem: [ObjectIdentifier: String] = [:]
+    private var thumbnailRequested = Set<String>()
 
     init(device: ICCameraDevice) {
         self.device = device
@@ -53,9 +58,24 @@ final class DeviceCatalog: NSObject {
         }
     }
 
+    /// Ask the device for a small preview image of one file (no-op if already
+    /// requested). Result arrives via `onThumbnail`.
+    func requestThumbnail(for path: String) {
+        guard let file = filesByPath[path], !thumbnailRequested.contains(path) else { return }
+        thumbnailRequested.insert(path)
+        if let existing = file.thumbnail {
+            onThumbnail?(path, existing)
+        } else {
+            file.requestThumbnail()
+        }
+    }
+
     private func build() {
         timeoutTask?.cancel()
-        let records = CameraJobEngine.makeRecords(from: device)
+        let pairs = CameraJobEngine.makeRecordPairs(from: device)
+        filesByPath = Dictionary(uniqueKeysWithValues: pairs.map { ($0.record.relativePath, $0.file) })
+        pathsByItem = Dictionary(uniqueKeysWithValues: pairs.map { (ObjectIdentifier($0.file), $0.record.relativePath) })
+        let records = pairs.map(\.record)
         let grouped = Dictionary(grouping: records) { record -> String in
             let dir = (record.relativePath as NSString).deletingLastPathComponent
             return dir.isEmpty ? "Media" : dir
@@ -109,7 +129,15 @@ extension DeviceCatalog: ICCameraDeviceDelegate {
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {}
     nonisolated func cameraDevice(
         _ camera: ICCameraDevice, didReceiveThumbnail thumbnail: CGImage?,
-        for item: ICCameraItem, error: Error?) {}
+        for item: ICCameraItem, error: Error?) {
+        guard let thumbnail else { return }
+        let key = ObjectIdentifier(item)
+        Task { @MainActor in
+            if let path = self.pathsByItem[key] {
+                self.onThumbnail?(path, thumbnail)
+            }
+        }
+    }
     nonisolated func cameraDevice(
         _ camera: ICCameraDevice, didReceiveMetadata metadata: [AnyHashable: Any]?,
         for item: ICCameraItem, error: Error?) {}

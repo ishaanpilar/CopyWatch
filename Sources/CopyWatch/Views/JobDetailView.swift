@@ -6,18 +6,18 @@ struct JobDetailView: View {
     @Environment(AppState.self) private var appState
     let job: CopyJob
     @State private var fileFilter: FileStatus?
+    @State private var showCleanupSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
             dashboard
-            if job.status == .completed && !job.isDeviceJob {
-                Divider()
-                SourceCleanupBox(job: job)
-            }
             Divider()
             fileTable
+        }
+        .sheet(isPresented: $showCleanupSheet) {
+            SourceCleanupSheet(jobID: job.id)
         }
     }
 
@@ -94,6 +94,15 @@ struct JobDetailView: View {
                 } label: {
                     Label("Cancel", systemImage: "xmark")
                 }
+            }
+
+            if job.status == .completed && !job.isDeviceJob && job.sourceTrashedAt == nil {
+                Button {
+                    showCleanupSheet = true
+                } label: {
+                    Label("Free Up Source…", systemImage: "trash")
+                }
+                .help("Move the copied originals to the Trash (safe, recoverable)")
             }
 
             Menu {
@@ -276,87 +285,113 @@ struct JobDetailView: View {
     }
 }
 
-// MARK: Source cleanup (Trash-only, type-to-arm)
+// MARK: Source cleanup sheet (Trash-only, type-to-arm)
 
-/// After a fully verified copy, the source originals can be reclaimed — moved
-/// to the Trash, never permanently deleted. The control is deliberately hard
-/// to trip: it's collapsed by default, arms only when the exact number of
-/// copied files is typed, and every file passes a final destination check
-/// (exists, size matches the manifest) before its original is touched.
-struct SourceCleanupBox: View {
+/// Dedicated modal for reclaiming the source drive after a verified copy.
+/// Deliberately hard to trip: reached only via the "Free Up Source…" button,
+/// arms only when the exact copied-file count is typed, re-checks every file's
+/// destination copy before touching its original, and only ever moves files to
+/// the Trash — never a permanent delete.
+struct SourceCleanupSheet: View {
     @Environment(AppState.self) private var appState
-    let job: CopyJob
+    @Environment(\.dismiss) private var dismiss
+    let jobID: UUID
 
-    @State private var expanded = false
     @State private var armText = ""
 
-    private var armCode: String { String(job.doneFiles) }
-    private var isArmed: Bool { armText == armCode }
-    private var isRunning: Bool { appState.cleanupRunning.contains(job.id) }
-    private var fullyVerified: Bool {
-        job.verifyAfterCopy && job.failedFiles == 0 && job.doneFiles == job.totalFiles
-    }
+    private var job: CopyJob? { appState.jobs.first { $0.id == jobID } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let trashedAt = job.sourceTrashedAt {
-                Label(
-                    "\(job.sourceTrashedCount ?? 0) source files were moved to the Trash on \(trashedAt.formatted(date: .abbreviated, time: .shortened)). Recover them from the Trash if needed.",
-                    systemImage: "trash.circle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else if isRunning {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Moving source files to the Trash…").font(.callout)
+        VStack(alignment: .leading, spacing: 16) {
+            if let job {
+                Label("Free up “\(job.sourceVolume.name)”", systemImage: "trash")
+                    .font(.title3.bold())
+
+                VStack(alignment: .leading, spacing: 8) {
+                    bullet("checkmark.shield", "Every file is re-checked first — its copy must still exist at the destination with the exact recorded size. Anything unverifiable is left untouched.")
+                    bullet("trash", "The \(job.doneFiles) copied originals move to the **Trash** on that drive. Nothing is permanently deleted — recover them from the Trash anytime.")
+                    bullet("lock", "To prevent accidents, the button unlocks only when you type the file count below.")
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+
+                content(job)
+
+                HStack {
+                    Spacer()
+                    Button("Close") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             } else {
-                DisclosureGroup(isExpanded: $expanded) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("This moves the \(job.doneFiles) copied originals on “\(job.sourceVolume.name)” to the Trash — nothing is permanently deleted, and every file is re-checked against its destination copy first. Files that can't be re-verified are left untouched.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        if !fullyVerified {
-                            Label("Available only for fully verified copies with zero failures.",
-                                  systemImage: "exclamationmark.triangle")
-                                .font(.callout)
-                                .foregroundStyle(.orange)
-                        } else {
-                            HStack(spacing: 10) {
-                                Text("Type **\(armCode)** (the file count) to arm:")
-                                    .font(.callout)
-                                TextField("", text: $armText)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 90)
-                                    .font(.body.monospaced())
-                                Button(role: .destructive) {
-                                    appState.trashSourceFiles(job.id)
-                                    armText = ""
-                                    expanded = false
-                                } label: {
-                                    Label(
-                                        isArmed
-                                            ? "Move \(job.doneFiles) Files to Trash"
-                                            : "Locked",
-                                        systemImage: isArmed ? "trash" : "lock.fill")
-                                }
-                                .disabled(!isArmed)
-                                .tint(.red)
-                            }
-                        }
-                    }
-                    .padding(.top, 6)
-                } label: {
-                    Label("Free up the source drive (safe delete)", systemImage: "trash")
-                        .font(.callout.bold())
-                }
-                .onChange(of: expanded) { _, _ in armText = "" }
+                Text("Job not found.").foregroundStyle(.secondary)
+                Button("Close") { dismiss() }
             }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
+        .padding(20)
+        .frame(width: 480)
+    }
+
+    @ViewBuilder
+    private func content(_ job: CopyJob) -> some View {
+        let armCode = String(job.doneFiles)
+        let fullyVerified = job.verifyAfterCopy && job.failedFiles == 0
+            && job.doneFiles == job.totalFiles
+
+        if appState.cleanupRunning.contains(job.id) {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Checking and moving files to the Trash…").font(.callout)
+            }
+        } else if let trashedAt = job.sourceTrashedAt {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("\(job.sourceTrashedCount ?? 0) source files were moved to the Trash on \(trashedAt.formatted(date: .abbreviated, time: .shortened)).",
+                      systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                if let message = job.statusMessage {
+                    Text(message).font(.callout).foregroundStyle(.secondary)
+                }
+                Button("Show Trash in Finder") {
+                    NSWorkspace.shared.open(
+                        URL(fileURLWithPath: NSHomeDirectory() + "/.Trash"))
+                }
+            }
+        } else if !fullyVerified {
+            Label("Available only for fully verified copies with zero failed files. Re-run the job with “Verify after copy” enabled.",
+                  systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .font(.callout)
+        } else {
+            HStack(spacing: 10) {
+                Text("Type \(armCode) to unlock:")
+                    .font(.callout)
+                TextField(armCode, text: $armText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 90)
+                    .font(.body.monospaced())
+                Spacer()
+                Button(role: .destructive) {
+                    appState.trashSourceFiles(job.id)
+                    armText = ""
+                } label: {
+                    Label(armText == armCode ? "Move \(job.doneFiles) Files to Trash" : "Locked",
+                          systemImage: armText == armCode ? "trash" : "lock.fill")
+                }
+                .tint(.red)
+                .disabled(armText != armCode)
+            }
+        }
+    }
+
+    private func bullet(_ icon: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: icon)
+                .frame(width: 18)
+                .foregroundStyle(.secondary)
+            Text(.init(text))
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

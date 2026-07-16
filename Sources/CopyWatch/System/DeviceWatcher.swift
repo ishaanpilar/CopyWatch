@@ -35,6 +35,10 @@ final class DeviceWatcher: NSObject, ICDeviceBrowserDelegate {
     ) {
         Task { @MainActor in
             guard let camera = device as? ICCameraDevice else { return }
+            // Mass-storage "cameras" are really disks (SSDs, card readers) —
+            // they mount as volumes and belong in the normal folder flow.
+            // Only true PTP devices (iPhones, tethered cameras) go here.
+            if camera.transportType == ICDeviceTransport.transportTypeMassStorage.rawValue { return }
             if !cameras.contains(where: { $0 === camera }) {
                 cameras.append(camera)
             }
