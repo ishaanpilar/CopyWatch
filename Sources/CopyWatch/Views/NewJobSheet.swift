@@ -3,7 +3,9 @@ import AppKit
 
 struct NewJobSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
     let onCreate: (String, String, Bool) -> Void
+    var onPickDevice: ((String) -> Void)?
 
     @State private var sourcePath = ""
     @State private var destParentPath = ""
@@ -23,6 +25,29 @@ struct NewJobSheet: View {
                 label: "Copy from",
                 hint: "Camera card, SSD folder…",
                 path: $sourcePath)
+
+            // iPhones/cameras never appear in the folder picker — they aren't
+            // disks. Route to their catalog-based backup flow instead.
+            if appState.devices.isEmpty {
+                Text("Looking for an iPhone or camera? It won't appear in the folder picker (it's not a disk). Plug it in and it shows up under Devices in the sidebar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(appState.devices) { device in
+                        Button {
+                            dismiss()
+                            onPickDevice?(device.id)
+                        } label: {
+                            Label("Backing up “\(device.name)”? Use the device flow — pick its folders & files there", systemImage: "iphone")
+                        }
+                        .buttonStyle(.link)
+                    }
+                    Text("iPhones aren't disks, so they can't be chosen as a folder above.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             pathPicker(
                 label: "Copy into",
                 hint: "Backup drive folder…",

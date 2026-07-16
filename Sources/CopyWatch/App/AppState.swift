@@ -141,9 +141,13 @@ final class AppState {
         sleepBlocker.setActive(true)
     }
 
-    /// Create a backup job for an iPhone/camera. The manifest is read from the
-    /// device's media catalog on first run.
-    func createDeviceJob(deviceID: String, deviceName: String, destParentPath: String, verify: Bool) {
+    /// Create a backup job for an iPhone/camera. Pass `manifest` to back up a
+    /// specific selection of the device's files; nil backs up the whole media
+    /// catalog (read on first run).
+    func createDeviceJob(
+        deviceID: String, deviceName: String, destParentPath: String,
+        verify: Bool, manifest: [FileRecord]? = nil
+    ) {
         let folderName = deviceName.replacingOccurrences(of: "/", with: "-")
         let destPath = (destParentPath as NSString).appendingPathComponent(folderName)
         var job = CopyJob(
@@ -156,6 +160,12 @@ final class AppState {
         )
         job.sourceDeviceID = deviceID
         job.verifyAfterCopy = verify
+        if let manifest {
+            job.files = manifest
+            job.totalFiles = manifest.count
+            job.totalBytes = manifest.reduce(0) { $0 + $1.size }
+            job.sourcePath = "Selected device media (\(manifest.count) files)"
+        }
         job.status = .ready
         jobs.insert(job, at: 0)
         store.save(job, force: true)
@@ -251,6 +261,62 @@ final class AppState {
             if job.sourcePath.hasPrefix(path + "/") || job.destPath.hasPrefix(path + "/")
                 || job.sourcePath == path || job.destPath == path {
                 engines[job.id]?.suspendForMissingVolume()
+            }
+        }
+    }
+
+    // MARK: Source cleanup (move copied originals to Trash)
+
+    var cleanupRunning: Set<UUID> = []
+
+    /// Move a completed job's source files to the Trash (never a permanent
+    /// delete). Each file gets a final safety check — its destination copy must
+    /// still exist with the recorded size — before its original is trashed.
+    func trashSourceFiles(_ jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              job.status == .completed, !job.isDeviceJob,
+              job.sourceTrashedAt == nil, !cleanupRunning.contains(jobID) else { return }
+        guard let src = job.sourceVolume.resolve(job.sourcePath),
+              let dst = job.destVolume.resolve(job.destPath) else {
+            mutateJob(jobID) {
+                $0.statusMessage = "Cannot clean up: connect both the source and destination drives first."
+            }
+            return
+        }
+        cleanupRunning.insert(jobID)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let fm = FileManager.default
+            var trashed = 0
+            var skipped = 0
+            for record in job.files where record.isDone {
+                let source = URL(fileURLWithPath: src).appendingPathComponent(record.relativePath)
+                let dest = URL(fileURLWithPath: dst).appendingPathComponent(record.relativePath)
+                guard let attrs = try? fm.attributesOfItem(atPath: dest.path),
+                      (attrs[.size] as? NSNumber)?.int64Value == record.size,
+                      fm.fileExists(atPath: source.path) else {
+                    skipped += 1
+                    continue
+                }
+                do {
+                    try fm.trashItem(at: source, resultingItemURL: nil)
+                    trashed += 1
+                } catch {
+                    skipped += 1
+                }
+            }
+            let trashedCount = trashed
+            let summary = skipped == 0
+                ? "\(trashed) source files moved to the Trash. Empty the Trash to reclaim the space."
+                : "\(trashed) source files moved to the Trash; \(skipped) left in place (missing or unverifiable at the destination)."
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.cleanupRunning.remove(jobID)
+                self.mutateJob(jobID) { j in
+                    j.sourceTrashedAt = Date()
+                    j.sourceTrashedCount = trashedCount
+                    j.statusMessage = summary
+                }
+                Notifier.notify(title: "Source cleanup finished", body: summary)
             }
         }
     }

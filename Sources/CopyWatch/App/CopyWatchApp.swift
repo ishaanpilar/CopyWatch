@@ -20,5 +20,21 @@ struct CopyWatchApp: App {
                 }
         }
         .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About CopyWatch") {
+                    NSApplication.shared.orderFrontStandardAboutPanel(options: [
+                        .credits: NSAttributedString(
+                            string: "Created by Ishaan Pilar\n\nVerified, resumable file backups for filmmakers — checksummed copy jobs, interrupted-copy rescue, folder comparison, and iPhone backup.\n\ngithub.com/ishaanpilar/CopyWatch",
+                            attributes: [
+                                .font: NSFont.systemFont(ofSize: 11),
+                                .foregroundColor: NSColor.secondaryLabelColor,
+                            ]),
+                        NSApplication.AboutPanelOptionKey(rawValue: "Copyright"):
+                            "© 2026 Ishaan Pilar",
+                    ])
+                }
+            }
+        }
     }
 }

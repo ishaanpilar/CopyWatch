@@ -199,15 +199,21 @@ final class CameraJobEngine: NSObject, JobRunning {
     }
 
     private func buildManifest() -> [FileRecord] {
+        Self.makeRecords(from: device)
+    }
+
+    /// Flatten a device's media catalog into manifest records
+    /// (shared with the pre-job catalog browser).
+    static func makeRecords(from device: ICCameraDevice) -> [FileRecord] {
         var records: [FileRecord] = []
         var seen = Set<String>()
         for item in device.mediaFiles ?? [] {
             guard let file = item as? ICCameraFile else { continue }
-            var path = Self.relativePath(for: file)
+            var path = relativePath(for: file)
             var n = 1
             while seen.contains(path) {
                 n += 1
-                path = Self.relativePath(for: file) + " (\(n))"
+                path = relativePath(for: file) + " (\(n))"
             }
             seen.insert(path)
             records.append(FileRecord(

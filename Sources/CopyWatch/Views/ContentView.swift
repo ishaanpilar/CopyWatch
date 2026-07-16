@@ -44,12 +44,18 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showNewJob) {
-            NewJobSheet { source, destParent, verify in
-                appState.createJob(sourcePath: source, destParentPath: destParent, verify: verify)
-                if let first = appState.jobs.first {
-                    selection = .job(first.id)
+            NewJobSheet(
+                onCreate: { source, destParent, verify in
+                    appState.createJob(sourcePath: source, destParentPath: destParent, verify: verify)
+                    if let first = appState.jobs.first {
+                        selection = .job(first.id)
+                    }
+                },
+                onPickDevice: { deviceID in
+                    showNewJob = false
+                    selection = .device(deviceID)
                 }
-            }
+            )
         }
         .navigationTitle("CopyWatch")
     }

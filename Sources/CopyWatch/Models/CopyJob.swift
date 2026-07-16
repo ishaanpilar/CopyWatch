@@ -47,6 +47,12 @@ struct CopyJob: Codable, Identifiable, Hashable {
     var sourceDeviceID: String?
     var isDeviceJob: Bool { sourceDeviceID != nil }
 
+    /// Set when the user reclaimed the source drive: the copied originals were
+    /// moved to the Trash (never permanently deleted). Optional so old job
+    /// files keep decoding.
+    var sourceTrashedAt: Date?
+    var sourceTrashedCount: Int?
+
     var status: JobStatus = .scanning
     var verifyAfterCopy: Bool = true
     var createdAt: Date = Date()

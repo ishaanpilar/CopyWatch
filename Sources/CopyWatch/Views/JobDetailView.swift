@@ -12,6 +12,10 @@ struct JobDetailView: View {
             header
             Divider()
             dashboard
+            if job.status == .completed && !job.isDeviceJob {
+                Divider()
+                SourceCleanupBox(job: job)
+            }
             Divider()
             fileTable
         }
@@ -255,6 +259,90 @@ struct JobDetailView: View {
         panel.nameFieldStringValue = job.name.replacingOccurrences(of: "/", with: "-") + ".csv"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? Format.csv(for: job).data(using: .utf8)?.write(to: url)
+    }
+}
+
+// MARK: Source cleanup (Trash-only, type-to-arm)
+
+/// After a fully verified copy, the source originals can be reclaimed — moved
+/// to the Trash, never permanently deleted. The control is deliberately hard
+/// to trip: it's collapsed by default, arms only when the exact number of
+/// copied files is typed, and every file passes a final destination check
+/// (exists, size matches the manifest) before its original is touched.
+struct SourceCleanupBox: View {
+    @Environment(AppState.self) private var appState
+    let job: CopyJob
+
+    @State private var expanded = false
+    @State private var armText = ""
+
+    private var armCode: String { String(job.doneFiles) }
+    private var isArmed: Bool { armText == armCode }
+    private var isRunning: Bool { appState.cleanupRunning.contains(job.id) }
+    private var fullyVerified: Bool {
+        job.verifyAfterCopy && job.failedFiles == 0 && job.doneFiles == job.totalFiles
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let trashedAt = job.sourceTrashedAt {
+                Label(
+                    "\(job.sourceTrashedCount ?? 0) source files were moved to the Trash on \(trashedAt.formatted(date: .abbreviated, time: .shortened)). Recover them from the Trash if needed.",
+                    systemImage: "trash.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if isRunning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Moving source files to the Trash…").font(.callout)
+                }
+            } else {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("This moves the \(job.doneFiles) copied originals on “\(job.sourceVolume.name)” to the Trash — nothing is permanently deleted, and every file is re-checked against its destination copy first. Files that can't be re-verified are left untouched.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if !fullyVerified {
+                            Label("Available only for fully verified copies with zero failures.",
+                                  systemImage: "exclamationmark.triangle")
+                                .font(.callout)
+                                .foregroundStyle(.orange)
+                        } else {
+                            HStack(spacing: 10) {
+                                Text("Type **\(armCode)** (the file count) to arm:")
+                                    .font(.callout)
+                                TextField("", text: $armText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 90)
+                                    .font(.body.monospaced())
+                                Button(role: .destructive) {
+                                    appState.trashSourceFiles(job.id)
+                                    armText = ""
+                                    expanded = false
+                                } label: {
+                                    Label(
+                                        isArmed
+                                            ? "Move \(job.doneFiles) Files to Trash"
+                                            : "Locked",
+                                        systemImage: isArmed ? "trash" : "lock.fill")
+                                }
+                                .disabled(!isArmed)
+                                .tint(.red)
+                            }
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Label("Free up the source drive (safe delete)", systemImage: "trash")
+                        .font(.callout.bold())
+                }
+                .onChange(of: expanded) { _, _ in armText = "" }
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
     }
 }
 
