@@ -155,6 +155,9 @@ struct JobRow: View {
         case .ready:
             Image(systemName: "circle.dashed")
                 .foregroundStyle(.secondary)
+        case .queued:
+            Image(systemName: "hourglass")
+                .foregroundStyle(.secondary)
         }
     }
 }

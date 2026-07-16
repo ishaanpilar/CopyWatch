@@ -1,12 +1,12 @@
 import Foundation
 
 enum JobStatus: String, Codable {
-    case scanning, ready, running, paused, waitingForVolume
+    case scanning, ready, queued, running, paused, waitingForVolume
     case interrupted, completed, completedWithErrors, cancelled
 
     var isActive: Bool {
         switch self {
-        case .scanning, .ready, .running, .paused, .waitingForVolume, .interrupted:
+        case .scanning, .ready, .queued, .running, .paused, .waitingForVolume, .interrupted:
             return true
         case .completed, .completedWithErrors, .cancelled:
             return false
@@ -17,6 +17,7 @@ enum JobStatus: String, Codable {
         switch self {
         case .scanning: "Scanning"
         case .ready: "Ready"
+        case .queued: "Queued"
         case .running: "Copying"
         case .paused: "Paused"
         case .waitingForVolume: "Waiting for drive"

@@ -154,6 +154,14 @@ struct JobDetailView: View {
                 } label: {
                     Label("Pause", systemImage: "pause.fill")
                 }
+            case .queued:
+                Button {
+                    appState.start(job.id, force: true)
+                } label: {
+                    Label("Start Now", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Skip the queue and start this copy alongside the others")
             default:
                 EmptyView()
             }
@@ -531,7 +539,7 @@ struct StatusBadge: View {
         case .completed: .green
         case .completedWithErrors, .paused, .interrupted, .waitingForVolume: .orange
         case .cancelled: .secondary
-        case .ready: .secondary
+        case .ready, .queued: .secondary
         }
     }
 }

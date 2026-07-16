@@ -155,10 +155,40 @@ final class AppState {
         }
     }
 
-    func start(_ jobID: UUID) {
+    /// Whether copy jobs run one-at-a-time (queued) or all at once.
+    var runJobsSerially: Bool = UserDefaults.standard.bool(forKey: "runJobsSerially") {
+        didSet {
+            UserDefaults.standard.set(runJobsSerially, forKey: "runJobsSerially")
+            // Switching to parallel releases the queue immediately.
+            if !runJobsSerially { startAllQueued() }
+        }
+    }
+
+    private var isSomeJobCopying: Bool {
+        jobs.contains { $0.status == .running }
+    }
+
+    /// Start (or queue) a job for its turn to run.
+    /// `force` bypasses the serial queue (used by "Start Now").
+    func start(_ jobID: UUID, force: Bool = false) {
         guard let job = jobs.first(where: { $0.id == jobID }) else { return }
-        guard job.status == .ready || job.status == .paused
+        guard job.status == .ready || job.status == .paused || job.status == .queued
                 || job.status == .interrupted || job.status == .waitingForVolume else { return }
+
+        // Serial mode: if another job is already copying, wait our turn.
+        if runJobsSerially && !force && isSomeJobCopying
+            && !(jobs.first { $0.id == jobID }?.status == .running) {
+            mutateJob(jobID) { j in
+                if j.status != .queued {
+                    j.status = .queued
+                    j.statusMessage = "Queued — will start when the current copy finishes."
+                }
+            }
+            return
+        }
+        if job.statusMessage?.hasPrefix("Queued") == true {
+            mutateJob(jobID) { $0.statusMessage = nil }
+        }
 
         let engine: any JobRunning
         if let deviceID = job.sourceDeviceID {
@@ -213,7 +243,10 @@ final class AppState {
         start(job.id)
     }
 
-    func pause(_ jobID: UUID) { engines[jobID]?.pause() }
+    func pause(_ jobID: UUID) {
+        engines[jobID]?.pause()
+        advanceQueue()
+    }
 
     func cancel(_ jobID: UUID) {
         if let engine = engines[jobID] {
@@ -227,6 +260,25 @@ final class AppState {
                 j.status = .cancelled
                 j.completedAt = Date()
             }
+        }
+        advanceQueue()
+    }
+
+    // MARK: Job queue (serial mode)
+
+    /// When serial mode is on and nothing is copying, start the oldest queued job.
+    private func advanceQueue() {
+        guard runJobsSerially, !isSomeJobCopying else { return }
+        // Oldest queued job first (jobs are newest-first, so search from the end).
+        if let next = jobs.last(where: { $0.status == .queued }) {
+            start(next.id)
+        }
+    }
+
+    /// Release all queued jobs at once (used when switching to parallel).
+    private func startAllQueued() {
+        for job in jobs where job.status == .queued {
+            start(job.id, force: true)
         }
     }
 
@@ -317,6 +369,10 @@ final class AppState {
                     title: "Copy paused — drive disconnected",
                     body: "\(snapshot.name) will be resumable when the drive returns.")
             default: break
+            }
+            // A job that just stopped copying frees the queue for the next one.
+            if oldStatus == .running && snapshot.status != .running {
+                advanceQueue()
             }
         }
         sleepBlocker.setActive(anyJobRunning)

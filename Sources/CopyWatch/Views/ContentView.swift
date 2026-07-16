@@ -75,6 +75,20 @@ struct ContentView: View {
                 }
                 .help("Create a new tracked copy job")
             }
+            ToolbarItem(placement: .automatic) {
+                Menu {
+                    Toggle("All together (parallel)", isOn: .init(
+                        get: { !appState.runJobsSerially },
+                        set: { appState.runJobsSerially = !$0 }))
+                    Toggle("One at a time (queue)", isOn: .init(
+                        get: { appState.runJobsSerially },
+                        set: { appState.runJobsSerially = $0 }))
+                } label: {
+                    Label(appState.runJobsSerially ? "One at a time" : "All together",
+                          systemImage: appState.runJobsSerially ? "list.number" : "square.stack.3d.up")
+                }
+                .help("Run multiple copy jobs one after another, or all at once")
+            }
         }
         .sheet(isPresented: $showNewJob) {
             NewJobSheet(
