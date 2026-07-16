@@ -16,6 +16,7 @@ final class JobEngine: @unchecked Sendable {
 
     private var lastEmit = Date.distantPast
     private var speedSamples: [(time: Date, bytes: Int64)] = []
+    private var lastHistorySample = Date.distantPast
 
     static let chunkSize = FileHasher.chunkSize
     static let partSuffix = ".cwpart"
@@ -116,6 +117,7 @@ final class JobEngine: @unchecked Sendable {
         Reconciler.reconcile(job: &job, destRoots: destRoots, sourceRoot: srcRoot, deep: true)
         job.statusMessage = nil
         speedSamples.removeAll()
+        job.speedHistory.removeAll()   // this run's own throughput profile
         emit(force: true)
 
         for i in job.files.indices where !job.files[i].isDone && job.files[i].status != .failed {
@@ -519,6 +521,13 @@ final class JobEngine: @unchecked Sendable {
         speedSamples.removeAll { now.timeIntervalSince($0.time) > 5 }
         let window = max(now.timeIntervalSince(speedSamples.first?.time ?? now), 0.5)
         job.bytesPerSecond = Double(speedSamples.reduce(0) { $0 + $1.bytes }) / window
+
+        // Record the throughput profile ~1×/sec for the speed graph.
+        if now.timeIntervalSince(lastHistorySample) >= 1.0 {
+            lastHistorySample = now
+            job.speedHistory.append(job.bytesPerSecond / 1_000_000)  // MB/s
+            if job.speedHistory.count > 240 { job.speedHistory.removeFirst() }
+        }
     }
 
     private func emit(force: Bool = false) {

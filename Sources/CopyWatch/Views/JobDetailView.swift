@@ -265,9 +265,33 @@ struct JobDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
+
+                if job.speedHistory.count >= 2 {
+                    SpeedGraph(history: job.speedHistory, current: job.bytesPerSecond)
+                        .frame(height: 68)
+                }
+
+                if let note = slowdownNote {
+                    Label(note.text, systemImage: note.icon)
+                        .font(.caption)
+                        .foregroundStyle(note.isProblem ? .orange : .secondary)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background((note.isProblem ? Color.orange : Color.secondary).opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                }
             }
         }
         .padding()
+    }
+
+    private var slowdownNote: SpeedAnalyzer.Note? {
+        guard job.status == .running else { return nil }
+        return SpeedAnalyzer.analyze(
+            history: job.speedHistory,
+            avgFileBytes: job.averageFileBytes,
+            currentFile: job.currentFile,
+            verifying: job.currentFile?.hasPrefix("Verifying") == true)
     }
 
     private var deltaZero: Bool {

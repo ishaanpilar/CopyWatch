@@ -93,8 +93,13 @@ struct CopyJob: Codable, Identifiable, Hashable {
     // Transient progress info (persisted harmlessly).
     var currentFile: String?
     var bytesPerSecond: Double = 0
+    /// Throughput profile in MB/s, one sample ~per second, capped — drives the
+    /// live speed graph and the slowdown analysis.
+    var speedHistory: [Double] = []
 
     var files: [FileRecord] = []
+
+    var averageFileBytes: Int64 { totalFiles > 0 ? totalBytes / Int64(totalFiles) : 0 }
 
     var fractionDone: Double {
         totalBytes > 0 ? Double(doneBytes) / Double(totalBytes) : 0
