@@ -240,6 +240,29 @@ final class AppState {
         jobs.removeAll { $0.id == jobID }
     }
 
+    // MARK: Notification actions
+
+    /// Route a tapped notification action button to the right job operation.
+    func handleNotificationAction(_ actionID: String, jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        switch actionID {
+        case Notifier.openFolderAction:
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: job.destPath)
+        case Notifier.viewReportAction:
+            openCertificate(for: job)
+        case Notifier.recheckAction:
+            recheck(jobID)
+        case Notifier.ejectAction:
+            if let vol = volumes.first(where: {
+                $0.isEjectable && (job.destPath == $0.path || job.destPath.hasPrefix($0.path + "/"))
+            }) {
+                _ = eject(vol)
+            }
+        default:
+            break   // default tap just activates the app
+        }
+    }
+
     // MARK: Integrity certificates
 
     private func generateCertificate(for job: CopyJob) {
@@ -276,15 +299,17 @@ final class AppState {
             case .completed:
                 engines[snapshot.id] = nil
                 generateCertificate(for: snapshot)
-                Notifier.notify(
+                Notifier.notifyCompletion(
                     title: "Backup verified ✓",
-                    body: "\(snapshot.name): \(snapshot.totalFiles) files, \(Format.bytes(snapshot.totalBytes))")
+                    body: "\(snapshot.name): \(snapshot.totalFiles) files, \(Format.bytes(snapshot.totalBytes))",
+                    jobID: snapshot.id)
             case .completedWithErrors:
                 engines[snapshot.id] = nil
                 generateCertificate(for: snapshot)
-                Notifier.notify(
+                Notifier.notifyCompletion(
                     title: "Backup finished with errors",
-                    body: "\(snapshot.name): \(snapshot.failedFiles) file(s) failed.")
+                    body: "\(snapshot.name): \(snapshot.failedFiles) file(s) failed.",
+                    jobID: snapshot.id)
             case .cancelled:
                 engines[snapshot.id] = nil
             case .waitingForVolume:
@@ -362,20 +387,40 @@ final class AppState {
             }
             return
         }
+        // Every destination that's currently reachable; recheck flags a file if
+        // it's missing or changed at ANY of them.
+        var destRoots = [URL(fileURLWithPath: dst)]
+        for extra in job.extraDestinations {
+            if let resolved = extra.volume.resolve(extra.path) {
+                destRoots.append(URL(fileURLWithPath: resolved))
+            }
+        }
         recheckRunning.insert(jobID)
         trashCandidates[jobID] = nil
         sourceMissingPaths[jobID] = nil
         let sourceRoot = job.isDeviceJob ? nil : job.sourceVolume.resolve(job.sourcePath)
         Task.detached(priority: .userInitiated) { [weak self, job] in
             var job = job
-            let destRoot = URL(fileURLWithPath: dst)
             let fm = FileManager.default
             var missing = 0, changed = 0, unrestorable = 0
             var foundInTrash: [String: URL] = [:]
             var srcMissing: [String] = []
 
+            // Worst state across all destinations for this file.
+            func worstState(_ record: FileRecord) -> Reconciler.MatchState {
+                var result = Reconciler.MatchState.match
+                for root in destRoots {
+                    switch Reconciler.classify(record, destRoot: root) {
+                    case .missing: return .missing
+                    case .partial, .differs: result = .differs
+                    case .match: break
+                    }
+                }
+                return result
+            }
+
             for i in job.files.indices where job.files[i].isDone {
-                let state = Reconciler.classify(job.files[i], destRoot: destRoot)
+                let state = worstState(job.files[i])
                 // Only meaningful when the source drive is actually connected.
                 let sourceGone = sourceRoot.map {
                     !fm.fileExists(atPath: ($0 as NSString)

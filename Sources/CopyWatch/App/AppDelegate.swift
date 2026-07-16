@@ -1,16 +1,40 @@
 import AppKit
+import UserNotifications
 
 /// Owns the single AppState instance (created before the SwiftUI scene
-/// builds) and registers CopyWatch as a Finder Service, so "Copy with
-/// CopyWatch" appears in Finder's right-click menu under Services for any
-/// selected file or folder.
+/// builds), registers CopyWatch as a Finder Service, and handles the action
+/// buttons on completion notifications.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let appState = AppState()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
+        UNUserNotificationCenter.current().delegate = self
+        Notifier.registerCategories()
+    }
+
+    // MARK: Notification action buttons
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let info = response.notification.request.content.userInfo
+        let action = response.actionIdentifier
+        guard let idStr = info["jobID"] as? String, let id = UUID(uuidString: idStr) else { return }
+        await MainActor.run {
+            NSApp.activate(ignoringOtherApps: true)
+            appState.handleNotificationAction(action, jobID: id)
+        }
     }
 
     /// Files dropped on the Dock icon or opened via `open -a CopyWatch …` —
