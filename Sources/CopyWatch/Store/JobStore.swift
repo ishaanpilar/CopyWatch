@@ -27,12 +27,24 @@ final class JobStore: @unchecked Sendable {
 
     // MARK: Jobs
 
-    /// Persist a job. Progress-only updates are throttled to ~1/sec; status
-    /// changes and `force` always hit disk.
+    /// Persist a job. Progress-only updates are throttled to ~1/sec and queued
+    /// asynchronously; `force` (status changes, completion) writes
+    /// synchronously so the call cannot return — and a process cannot exit —
+    /// before the final state is actually on disk. Without this, a job that
+    /// finishes right before the app or a headless run quits can leave a
+    /// stale, mid-copy snapshot as its permanent history record.
     func save(_ job: CopyJob, force: Bool = false) {
+        if force {
+            queue.sync { [self] in
+                lastSave[job.id] = Date()
+                lastSavedStatus[job.id] = job.status
+                write(job, to: jobURL(job.id))
+            }
+            return
+        }
         queue.async { [self] in
             let statusChanged = lastSavedStatus[job.id] != job.status
-            if !force && !statusChanged,
+            if !statusChanged,
                let last = lastSave[job.id], Date().timeIntervalSince(last) < 1.0 {
                 return
             }
@@ -52,8 +64,10 @@ final class JobStore: @unchecked Sendable {
 
     // MARK: Comparisons
 
+    /// Comparisons save once, at completion — always synchronous for the same
+    /// reason as a forced job save.
     func save(_ record: ComparisonRecord) {
-        queue.async { [self] in write(record, to: compareURL(record.id)) }
+        queue.sync { [self] in write(record, to: compareURL(record.id)) }
     }
 
     func loadComparisons() -> [ComparisonRecord] {

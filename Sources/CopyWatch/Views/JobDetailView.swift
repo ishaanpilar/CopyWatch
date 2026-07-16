@@ -41,6 +41,28 @@ struct JobDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(bannerColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
             }
+
+            if let candidates = appState.trashCandidates[job.id], !candidates.isEmpty {
+                HStack {
+                    Label(
+                        "\(candidates.count) file(s) deleted from the destination were found in the Trash.",
+                        systemImage: "trash.circle")
+                        .font(.callout)
+                    Spacer()
+                    if appState.restoreRunning.contains(job.id) {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button {
+                            appState.restoreFromTrash(job.id)
+                        } label: {
+                            Label("Restore from Trash", systemImage: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(8)
+                .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
+            }
         }
         .padding()
     }
@@ -189,26 +211,10 @@ struct JobDetailView: View {
     @ViewBuilder private var deltaCard: some View {
         let remainingFiles = job.totalFiles - job.doneFiles
         let remainingBytes = job.totalBytes - job.doneBytes
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(deltaZero ? "Match" : "Remaining")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if canRecheck {
-                    if appState.recheckRunning.contains(job.id) {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Button {
-                            appState.recheck(job.id)
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Re-verify against the drives right now — detects files deleted or changed since the copy, and lets you repair them")
-                    }
-                }
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            Text(deltaZero ? "Match" : "Remaining")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if deltaZero {
                 Label("Everything is good", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)
@@ -225,6 +231,24 @@ struct JobDetailView: View {
                 Text("\(job.failedFiles) failed")
                     .font(.caption)
                     .foregroundStyle(.red)
+            }
+            if canRecheck {
+                if appState.recheckRunning.contains(job.id) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Checking…").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button {
+                        appState.recheck(job.id)
+                    } label: {
+                        Label("Recheck Now", systemImage: "arrow.clockwise")
+                            .font(.callout)
+                    }
+                    .buttonStyle(.bordered)
+                    .padding(.top, 2)
+                    .help("Re-verify against the drives right now — detects files deleted or changed since the copy, and lets you repair or restore them")
+                }
             }
         }
         .padding(12)

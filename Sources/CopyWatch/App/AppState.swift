@@ -64,16 +64,32 @@ final class AppState {
 
     // MARK: Job lifecycle
 
-    func createJob(sourcePath: String, destParentPath: String, verify: Bool) {
-        let destPath = (destParentPath as NSString)
-            .appendingPathComponent((sourcePath as NSString).lastPathComponent)
+    /// Create a job from one or more selected sources — a single folder (the
+    /// common case), or a mix of individual files and folders picked together
+    /// (Scanner.scanSelection finds their common ancestor and preserves enough
+    /// structure to avoid collisions).
+    func createJob(sourcePaths: [String], destParentPath: String, verify: Bool) {
+        guard !sourcePaths.isEmpty else { return }
+        let isSingleFolder = sourcePaths.count == 1
+            && (try? URL(fileURLWithPath: sourcePaths[0]).resourceValues(forKeys: [.isDirectoryKey]))?
+                .isDirectory == true
+
+        // Placeholder root/dest until the scan resolves the real common ancestor;
+        // refined below once scanSelection returns.
+        let provisionalName = isSingleFolder
+            ? CopyJob.defaultName(
+                source: sourcePaths[0],
+                dest: (destParentPath as NSString).appendingPathComponent(
+                    (sourcePaths[0] as NSString).lastPathComponent))
+            : "\(sourcePaths.count) items → \((destParentPath as NSString).lastPathComponent)"
+
         var job = CopyJob(
             id: UUID(),
-            name: CopyJob.defaultName(source: sourcePath, dest: destPath),
-            sourceVolume: .forPath(sourcePath),
+            name: provisionalName,
+            sourceVolume: .forPath(sourcePaths[0]),
             destVolume: .forPath(destParentPath),
-            sourcePath: sourcePath,
-            destPath: destPath
+            sourcePath: sourcePaths[0],
+            destPath: destParentPath
         )
         job.verifyAfterCopy = verify
         job.status = .scanning
@@ -83,17 +99,18 @@ final class AppState {
         let jobID = job.id
         scanTasks[jobID] = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                let records = try Scanner.scan(root: URL(fileURLWithPath: sourcePath)) { count, bytes in
-                    Task { @MainActor [weak self] in
-                        self?.mutateJob(jobID) { j in
-                            j.totalFiles = count
-                            j.totalBytes = bytes
-                        }
-                    }
-                }
+                let (root, records) = try Scanner.scanSelection(paths: sourcePaths)
+                let destPath = (destParentPath as NSString).appendingPathComponent(
+                    isSingleFolder ? (root as NSString).lastPathComponent : "Selected Files")
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.mutateJob(jobID) { j in
+                        j.sourcePath = root
+                        j.destPath = destPath
+                        j.sourceVolume = .forPath(root)
+                        j.name = isSingleFolder
+                            ? CopyJob.defaultName(source: root, dest: destPath)
+                            : "\(sourcePaths.count) items → \((destParentPath as NSString).lastPathComponent)"
                         j.files = records
                         j.totalFiles = records.count
                         j.totalBytes = records.reduce(0) { $0 + $1.size }
@@ -268,12 +285,16 @@ final class AppState {
     // MARK: Re-verify a finished job against the drives as they are NOW
 
     var recheckRunning: Set<UUID> = []
+    /// Trash matches found by the last recheck: jobID -> relativePath -> Trash URL.
+    var trashCandidates: [UUID: [String: URL]] = [:]
+    var restoreRunning: Set<UUID> = []
 
     /// Re-check every manifest file against the destination's current state.
     /// Files that vanished or changed since the copy are flagged and reset to
     /// pending, and the job becomes resumable — Resume then re-copies exactly
     /// those files (the repair). Files also gone from the source are marked
-    /// failed, since there is nothing left to restore from.
+    /// failed UNLESS a matching copy is found sitting in the Trash, in which
+    /// case they're offered a direct restore instead of a recopy.
     func recheck(_ jobID: UUID) {
         guard let job = jobs.first(where: { $0.id == jobID }),
               !job.status.isActive || job.status == .interrupted,
@@ -285,12 +306,14 @@ final class AppState {
             return
         }
         recheckRunning.insert(jobID)
+        trashCandidates[jobID] = nil
         let sourceRoot = job.isDeviceJob ? nil : job.sourceVolume.resolve(job.sourcePath)
         Task.detached(priority: .userInitiated) { [weak self, job] in
             var job = job
             let destRoot = URL(fileURLWithPath: dst)
             let fm = FileManager.default
             var missing = 0, changed = 0, unrestorable = 0
+            var foundInTrash: [String: URL] = [:]
 
             for i in job.files.indices where job.files[i].isDone {
                 let state = Reconciler.classify(job.files[i], destRoot: destRoot)
@@ -300,40 +323,125 @@ final class AppState {
                     !fm.fileExists(atPath: ($0 as NSString)
                         .appendingPathComponent(job.files[i].relativePath))
                 } ?? false
-                if sourceGone {
+
+                var trashMatch: URL?
+                if state == .missing {
+                    trashMatch = TrashFinder.find(
+                        fileName: (job.files[i].relativePath as NSString).lastPathComponent,
+                        size: job.files[i].size, near: dst)
+                    if let trashMatch {
+                        foundInTrash[job.files[i].relativePath] = trashMatch
+                    }
+                }
+
+                if sourceGone && trashMatch == nil {
                     job.files[i].status = .failed
                     job.files[i].error = "Missing at destination, and the source original is gone — nothing to restore from."
                     unrestorable += 1
-                } else {
+                } else if trashMatch == nil {
                     job.files[i].status = .pending
                     job.files[i].error = nil
                     job.files[i].checksum = nil
                 }
+                // Files with a Trash match keep their prior status — they're
+                // surfaced via trashCandidates and restored in place, not recopied.
                 job.files[i].bytesCopied = 0
             }
             job.recomputeCounters()
 
-            let problems = missing + changed
-            if problems == 0 {
+            let restoredFromTrash = foundInTrash.count
+            let problems = missing + changed - restoredFromTrash
+            if problems == 0 && restoredFromTrash == 0 {
                 if job.status == .interrupted && job.pendingFiles == 0 && job.failedFiles == 0 {
                     job.status = .completed
                 }
                 job.statusMessage = "Re-verified \(Date().formatted(date: .omitted, time: .shortened)) — destination matches the manifest."
-            } else if problems == unrestorable {
-                job.status = .completedWithErrors
-                job.statusMessage = "\(problems) file(s) missing at the destination and gone from the source — cannot restore."
             } else {
-                job.status = .interrupted
-                let restorable = problems - unrestorable
-                job.statusMessage = "\(missing) missing, \(changed) changed at the destination. "
-                    + "Press Repair to re-copy \(restorable) file(s)"
-                    + (unrestorable > 0 ? " (\(unrestorable) also gone from the source)." : ".")
+                job.status = problems > 0 && problems == unrestorable && restoredFromTrash == 0
+                    ? .completedWithErrors : .interrupted
+                var parts: [String] = []
+                if missing + changed - restoredFromTrash > 0 || unrestorable > 0 {
+                    parts.append("\(missing) missing, \(changed) changed at the destination.")
+                }
+                let repairable = problems - unrestorable
+                if repairable > 0 {
+                    parts.append("Press Repair to re-copy \(repairable) file(s).")
+                }
+                if restoredFromTrash > 0 {
+                    parts.append("\(restoredFromTrash) found in the Trash — restore below.")
+                }
+                if unrestorable > 0 {
+                    parts.append("\(unrestorable) also gone from the source.")
+                }
+                job.statusMessage = parts.joined(separator: " ")
+            }
+
+            let finalJob = job
+            let finalTrashCandidates = foundInTrash
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.recheckRunning.remove(jobID)
+                self.trashCandidates[jobID] = finalTrashCandidates.isEmpty ? nil : finalTrashCandidates
+                if let idx = self.jobs.firstIndex(where: { $0.id == jobID }) {
+                    self.jobs[idx] = finalJob
+                    self.store.save(finalJob, force: true)
+                }
+            }
+        }
+    }
+
+    /// Move Trash-found files back to their destination location. Each is
+    /// re-checksummed after landing so a corrupted or wrong-name Trash match
+    /// never silently passes as verified.
+    func restoreFromTrash(_ jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              let candidates = trashCandidates[jobID], !candidates.isEmpty,
+              let dst = job.destVolume.resolve(job.destPath),
+              !restoreRunning.contains(jobID) else { return }
+        restoreRunning.insert(jobID)
+        Task.detached(priority: .userInitiated) { [weak self, job] in
+            var job = job
+            let destRoot = URL(fileURLWithPath: dst)
+            let fm = FileManager.default
+            var restored = 0, failed = 0
+
+            for (relativePath, trashURL) in candidates {
+                guard let idx = job.files.firstIndex(where: { $0.relativePath == relativePath }) else { continue }
+                let destURL = destRoot.appendingPathComponent(relativePath)
+                do {
+                    try fm.createDirectory(
+                        at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
+                    try fm.copyItem(at: trashURL, to: destURL)
+                    let checksum = try FileHasher.sha256(of: destURL)
+                    job.files[idx].checksum = checksum
+                    job.files[idx].status = .verified
+                    job.files[idx].bytesCopied = job.files[idx].size
+                    job.files[idx].error = nil
+                    restored += 1
+                    try? fm.removeItem(at: trashURL)
+                } catch {
+                    job.files[idx].status = .failed
+                    job.files[idx].error = "Restore from Trash failed: \(error.localizedDescription)"
+                    failed += 1
+                }
+            }
+            job.recomputeCounters()
+            if job.pendingFiles == 0 && job.failedFiles == 0 {
+                job.status = .completed
+                job.statusMessage = "Restored \(restored) file(s) from the Trash. Destination matches the manifest again."
+            } else {
+                job.status = job.failedFiles > 0 ? .interrupted : job.status
+                job.statusMessage = failed > 0
+                    ? "Restored \(restored) file(s); \(failed) could not be restored."
+                    : "Restored \(restored) file(s) from the Trash."
             }
 
             let finalJob = job
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.recheckRunning.remove(jobID)
+                self.restoreRunning.remove(jobID)
+                self.trashCandidates[jobID] = nil
                 if let idx = self.jobs.firstIndex(where: { $0.id == jobID }) {
                     self.jobs[idx] = finalJob
                     self.store.save(finalJob, force: true)

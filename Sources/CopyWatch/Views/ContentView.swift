@@ -64,8 +64,8 @@ struct ContentView: View {
             NewJobSheet(
                 initialSource: newJobSource,
                 initialDest: newJobDest,
-                onCreate: { source, destParent, verify in
-                    appState.createJob(sourcePath: source, destParentPath: destParent, verify: verify)
+                onCreate: { sources, destParent, verify in
+                    appState.createJob(sourcePaths: sources, destParentPath: destParent, verify: verify)
                     if let first = appState.jobs.first {
                         selection = .job(first.id)
                     }

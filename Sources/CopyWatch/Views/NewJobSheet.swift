@@ -4,26 +4,36 @@ import AppKit
 struct NewJobSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppState.self) private var appState
-    let onCreate: (String, String, Bool) -> Void
+    let onCreate: ([String], String, Bool) -> Void
     var onPickDevice: ((String) -> Void)?
 
-    @State private var sourcePath: String
+    @State private var sourcePaths: [String]
     @State private var destParentPath: String
     @State private var verify = true
 
     init(initialSource: String = "", initialDest: String = "",
-         onCreate: @escaping (String, String, Bool) -> Void,
+         onCreate: @escaping ([String], String, Bool) -> Void,
          onPickDevice: ((String) -> Void)? = nil) {
         self.onCreate = onCreate
         self.onPickDevice = onPickDevice
-        _sourcePath = State(initialValue: initialSource)
+        _sourcePaths = State(initialValue: initialSource.isEmpty ? [] : [initialSource])
         _destParentPath = State(initialValue: initialDest)
     }
 
+    private var sourceSummary: String {
+        switch sourcePaths.count {
+        case 0: ""
+        case 1: sourcePaths[0]
+        default: "\(sourcePaths.count) items selected"
+        }
+    }
+
     private var destPreview: String? {
-        guard !sourcePath.isEmpty, !destParentPath.isEmpty else { return nil }
-        return (destParentPath as NSString)
-            .appendingPathComponent((sourcePath as NSString).lastPathComponent)
+        guard !sourcePaths.isEmpty, !destParentPath.isEmpty else { return nil }
+        let name = sourcePaths.count == 1
+            ? (sourcePaths[0] as NSString).lastPathComponent
+            : "Selected Files"
+        return (destParentPath as NSString).appendingPathComponent(name)
     }
 
     var body: some View {
@@ -33,15 +43,16 @@ struct NewJobSheet: View {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 10) {
                 GridRow {
                     Text("From").gridColumnAlignment(.trailing)
-                    TextField("Camera card or folder", text: $sourcePath)
+                    TextField("Camera card, folder, or files", text: .constant(sourceSummary))
                         .textFieldStyle(.roundedBorder)
-                    Button("Choose…") { choose(into: $sourcePath) }
+                        .disabled(true)
+                    Button("Choose…") { chooseSource() }
                 }
                 GridRow {
                     Text("To")
                     TextField("Backup folder", text: $destParentPath)
                         .textFieldStyle(.roundedBorder)
-                    Button("Choose…") { choose(into: $destParentPath) }
+                    Button("Choose…") { chooseDest() }
                 }
             }
 
@@ -73,26 +84,39 @@ struct NewJobSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Start Copy") {
-                    onCreate(sourcePath, destParentPath, verify)
+                    onCreate(sourcePaths, destParentPath, verify)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(sourcePath.isEmpty || destParentPath.isEmpty || sourcePath == destParentPath)
+                .disabled(sourcePaths.isEmpty || destParentPath.isEmpty
+                          || sourcePaths.contains(destParentPath))
             }
         }
         .padding(18)
         .frame(width: 470)
     }
 
-    private func choose(into path: Binding<String>) {
+    private func chooseSource() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Select"
+        panel.message = "Choose a folder, or select individual files and folders together."
+        if panel.runModal() == .OK {
+            sourcePaths = panel.urls.map(\.path)
+        }
+    }
+
+    private func chooseDest() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Select"
         if panel.runModal() == .OK, let url = panel.url {
-            path.wrappedValue = url.path
+            destParentPath = url.path
         }
     }
 }
