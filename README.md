@@ -26,8 +26,13 @@ CopyWatch was built to remove the guesswork:
 - **Rescue a copy Finder already messed up** — point CopyWatch at a destination that has a half-finished Finder copy sitting in it, and it'll figure out what's already there and finish the job properly.
 - **Compare two folders** to see, at a glance, whether they truly match — same files, same sizes, nothing missing or corrupted.
 - **Back up an iPhone or camera** — browse its photos and videos like a gallery and pick exactly what to copy.
-- **Double-check itself, anytime** — hit "Recheck" on any past backup to confirm the destination still matches, even if it's been weeks. If a file went missing (even if it just got dragged to the Trash), CopyWatch will tell you and offer to fix it.
+- **Double-check itself, anytime** — hit "Recheck" on any past backup to confirm both the source and destination still match, even if it's been weeks. If a file went missing (even if it just got dragged to the Trash), CopyWatch will tell you and offer to fix it.
 - **Free up space safely** — once a backup is fully verified, CopyWatch can move the original files to the Trash for you (never a permanent delete) so you can reuse the card or drive.
+- **Back up to several drives at once** — one source, two or more verified copies in a single pass. Save a destination that holds multiple folders and every drop fans out to all of them.
+- **Skip what's already there** — CopyWatch recognises files that are already backed up (by checksum, not just name and size) and skips them, so re-running a backup only copies what actually changed.
+- **Get a shareable integrity certificate** — every finished backup produces a certificate with a unique ID and the full checksum manifest, so you can prove the copy is intact.
+- **Benchmark your drives** — measure real read/write speed and health to diagnose a slow backup or catch a drive that's starting to fail.
+- **Plain-language errors** — if something goes wrong, CopyWatch tells you what happened (drive disconnected, cable unstable, disk full, permission denied…) and how to fix it.
 
 ## Install it
 
@@ -105,7 +110,6 @@ Headless jobs are saved to the same history the app shows.
 
 - Passive Finder-activity logger (best-effort history of copies made outside CopyWatch).
 - xxHash64 + MHL manifest export for postproduction-standard interchange.
-- Multiple simultaneous destinations per source (card → two backups in one pass).
 - Code signing & notarization, to remove the Gatekeeper warning on first launch.
 
 ### Contributing
