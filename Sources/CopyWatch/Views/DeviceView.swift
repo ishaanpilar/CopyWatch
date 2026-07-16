@@ -260,7 +260,7 @@ struct DeviceView: View {
                 TextField("Backup folder…", text: $destParentPath)
                     .textFieldStyle(.roundedBorder)
                     .font(.callout.monospaced())
-                Button("Choose…") { pickDest() }
+                Button("Choose") { pickDest() }
             }
             HStack {
                 Toggle("Checksum every file (SHA-256)", isOn: $verify)

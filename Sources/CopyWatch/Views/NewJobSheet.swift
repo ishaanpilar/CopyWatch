@@ -47,13 +47,13 @@ struct NewJobSheet: View {
                     TextField("Camera card, folder, or files", text: .constant(sourceSummary))
                         .textFieldStyle(.roundedBorder)
                         .disabled(true)
-                    Button("Choose…") { chooseSource() }
+                    Button("Choose") { chooseSource() }
                 }
                 GridRow {
                     Text("To")
                     TextField("Backup folder", text: $destParentPath)
                         .textFieldStyle(.roundedBorder)
-                    Button("Choose…") { chooseDest() }
+                    Button("Choose") { chooseDest() }
                 }
             }
 
@@ -76,7 +76,7 @@ struct NewJobSheet: View {
             HStack {
                 Spacer()
                 ForEach(appState.devices) { device in
-                    Button("Back up “\(device.name)” instead…") {
+                    Button("Back up “\(device.name)” instead") {
                         dismiss()
                         onPickDevice?(device.id)
                     }

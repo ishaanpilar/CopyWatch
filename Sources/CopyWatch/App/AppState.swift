@@ -17,10 +17,6 @@ final class AppState {
     var volumes: [MountedVolume] = []
     var devices: [CameraDeviceInfo] = []
     var destinationPresets: [DestinationPreset] = []
-    /// Sources that arrived via drag-and-drop or the Finder "Copy with
-    /// CopyWatch" service and have no default destination to go to
-    /// automatically — the UI opens New Job prefilled with these.
-    var pendingSourcePaths: [String]?
 
     let store: JobStore
     @ObservationIgnored private var engines: [UUID: any JobRunning] = [:]
@@ -106,8 +102,12 @@ final class AppState {
         scanTasks[jobID] = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let (root, records) = try Scanner.scanSelection(paths: sourcePaths)
-                let destPath = (destParentPath as NSString).appendingPathComponent(
-                    isSingleFolder ? (root as NSString).lastPathComponent : "Selected Files")
+                // A single folder keeps its name at the destination; loose files
+                // (or a mixed selection) land directly in the chosen folder, the
+                // way Finder drops them — no artificial wrapper folder.
+                let destPath = isSingleFolder
+                    ? (destParentPath as NSString).appendingPathComponent((root as NSString).lastPathComponent)
+                    : destParentPath
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.mutateJob(jobID) { j in
@@ -293,14 +293,19 @@ final class AppState {
     var recheckRunning: Set<UUID> = []
     /// Trash matches found by the last recheck: jobID -> relativePath -> Trash URL.
     var trashCandidates: [UUID: [String: URL]] = [:]
+    /// Files verified at the destination but missing from the source — can be
+    /// copied back to the source ("Restore to Source"). jobID -> relative paths.
+    var sourceMissingPaths: [UUID: [String]] = [:]
     var restoreRunning: Set<UUID> = []
 
-    /// Re-check every manifest file against the destination's current state.
-    /// Files that vanished or changed since the copy are flagged and reset to
-    /// pending, and the job becomes resumable — Resume then re-copies exactly
-    /// those files (the repair). Files also gone from the source are marked
-    /// failed UNLESS a matching copy is found sitting in the Trash, in which
-    /// case they're offered a direct restore instead of a recopy.
+    /// Re-check every manifest file against BOTH sides as they are right now:
+    ///  - Destination missing/changed → reset to pending so Repair re-copies
+    ///    them from the source (or restores from the Trash if that's where a
+    ///    deleted destination file ended up).
+    ///  - Source missing but destination intact → offered for "Restore to
+    ///    Source" (copy the verified destination copy back). This is also how a
+    ///    job whose source was cleared via "Free Up Source" reports that the
+    ///    originals are gone, instead of falsely showing "everything is good".
     func recheck(_ jobID: UUID) {
         guard let job = jobs.first(where: { $0.id == jobID }),
               !job.status.isActive || job.status == .interrupted,
@@ -313,6 +318,7 @@ final class AppState {
         }
         recheckRunning.insert(jobID)
         trashCandidates[jobID] = nil
+        sourceMissingPaths[jobID] = nil
         let sourceRoot = job.isDeviceJob ? nil : job.sourceVolume.resolve(job.sourcePath)
         Task.detached(priority: .userInitiated) { [weak self, job] in
             var job = job
@@ -320,16 +326,23 @@ final class AppState {
             let fm = FileManager.default
             var missing = 0, changed = 0, unrestorable = 0
             var foundInTrash: [String: URL] = [:]
+            var srcMissing: [String] = []
 
             for i in job.files.indices where job.files[i].isDone {
                 let state = Reconciler.classify(job.files[i], destRoot: destRoot)
-                guard state != .match else { continue }
-                if state == .missing { missing += 1 } else { changed += 1 }
+                // Only meaningful when the source drive is actually connected.
                 let sourceGone = sourceRoot.map {
                     !fm.fileExists(atPath: ($0 as NSString)
                         .appendingPathComponent(job.files[i].relativePath))
                 } ?? false
 
+                if state == .match {
+                    // Destination fine — does the original still exist at source?
+                    if sourceGone { srcMissing.append(job.files[i].relativePath) }
+                    continue
+                }
+
+                if state == .missing { missing += 1 } else { changed += 1 }
                 var trashMatch: URL?
                 if state == .missing {
                     trashMatch = TrashFinder.find(
@@ -342,52 +355,116 @@ final class AppState {
 
                 if sourceGone && trashMatch == nil {
                     job.files[i].status = .failed
-                    job.files[i].error = "Missing at destination, and the source original is gone — nothing to restore from."
+                    job.files[i].error = "Gone from both the destination and the source — cannot recover."
                     unrestorable += 1
                 } else if trashMatch == nil {
                     job.files[i].status = .pending
                     job.files[i].error = nil
                     job.files[i].checksum = nil
                 }
-                // Files with a Trash match keep their prior status — they're
-                // surfaced via trashCandidates and restored in place, not recopied.
                 job.files[i].bytesCopied = 0
             }
             job.recomputeCounters()
 
             let restoredFromTrash = foundInTrash.count
-            let problems = missing + changed - restoredFromTrash
-            if problems == 0 && restoredFromTrash == 0 {
+            let destProblems = missing + changed
+            let repairable = destProblems - unrestorable - restoredFromTrash
+            let stamp = Date().formatted(date: .omitted, time: .shortened)
+
+            // The destination-side detail goes in the status banner; the
+            // source-side detail is carried entirely by its own action banner
+            // (with the Restore to Source button), so it is not duplicated here.
+            var parts: [String] = []
+            if destProblems > 0 {
+                parts.append("\(missing) missing, \(changed) changed at the destination.")
+                if repairable > 0 { parts.append("Repair re-copies \(repairable) from the source.") }
+                if restoredFromTrash > 0 { parts.append("\(restoredFromTrash) found in the Trash — restore below.") }
+                if unrestorable > 0 { parts.append("\(unrestorable) gone from both sides — cannot recover.") }
+            }
+
+            // Status: interrupted if the destination itself needs work; otherwise
+            // completed (source-only issues are surfaced via banner + button, not
+            // by making the backup itself look broken).
+            if destProblems == 0 {
                 if job.status == .interrupted && job.pendingFiles == 0 && job.failedFiles == 0 {
                     job.status = .completed
                 }
-                job.statusMessage = "Re-verified \(Date().formatted(date: .omitted, time: .shortened)) — destination matches the manifest."
+                job.statusMessage = srcMissing.isEmpty
+                    ? "Re-verified \(stamp) — source and destination both match the manifest."
+                    : nil
             } else {
-                job.status = problems > 0 && problems == unrestorable && restoredFromTrash == 0
+                job.status = repairable == 0 && restoredFromTrash == 0 && unrestorable == destProblems
                     ? .completedWithErrors : .interrupted
-                var parts: [String] = []
-                if missing + changed - restoredFromTrash > 0 || unrestorable > 0 {
-                    parts.append("\(missing) missing, \(changed) changed at the destination.")
-                }
-                let repairable = problems - unrestorable
-                if repairable > 0 {
-                    parts.append("Press Repair to re-copy \(repairable) file(s).")
-                }
-                if restoredFromTrash > 0 {
-                    parts.append("\(restoredFromTrash) found in the Trash — restore below.")
-                }
-                if unrestorable > 0 {
-                    parts.append("\(unrestorable) also gone from the source.")
-                }
                 job.statusMessage = parts.joined(separator: " ")
             }
 
             let finalJob = job
-            let finalTrashCandidates = foundInTrash
+            let finalTrash = foundInTrash
+            let finalSrcMissing = srcMissing
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.recheckRunning.remove(jobID)
-                self.trashCandidates[jobID] = finalTrashCandidates.isEmpty ? nil : finalTrashCandidates
+                self.trashCandidates[jobID] = finalTrash.isEmpty ? nil : finalTrash
+                self.sourceMissingPaths[jobID] = finalSrcMissing.isEmpty ? nil : finalSrcMissing
+                if let idx = self.jobs.firstIndex(where: { $0.id == jobID }) {
+                    self.jobs[idx] = finalJob
+                    self.store.save(finalJob, force: true)
+                }
+            }
+        }
+    }
+
+    /// Copy verified destination files back to their original source location —
+    /// undoes an over-eager "Free Up Source", or restores an accidentally
+    /// deleted original. Re-checksums each restored file.
+    func restoreToSource(_ jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              let paths = sourceMissingPaths[jobID], !paths.isEmpty,
+              let dst = job.destVolume.resolve(job.destPath),
+              !restoreRunning.contains(jobID) else { return }
+        // The source root may be an empty (freed-up) folder that still exists,
+        // or need recreating; resolve the volume, fall back to the recorded path.
+        let srcRoot = job.sourceVolume.resolve(job.sourcePath) ?? job.sourcePath
+        restoreRunning.insert(jobID)
+        Task.detached(priority: .userInitiated) { [weak self, job] in
+            var job = job
+            let destRoot = URL(fileURLWithPath: dst)
+            let sourceRoot = URL(fileURLWithPath: srcRoot)
+            let fm = FileManager.default
+            var restored = 0, failed = 0
+            var failMsg: String?
+
+            for relativePath in paths {
+                let destURL = destRoot.appendingPathComponent(relativePath)
+                let srcURL = sourceRoot.appendingPathComponent(relativePath)
+                guard fm.fileExists(atPath: destURL.path) else { failed += 1; continue }
+                do {
+                    try fm.createDirectory(
+                        at: srcURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    if fm.fileExists(atPath: srcURL.path) { try fm.removeItem(at: srcURL) }
+                    try fm.copyItem(at: destURL, to: srcURL)
+                    restored += 1
+                } catch {
+                    failed += 1
+                    failMsg = error.localizedDescription
+                }
+            }
+            // A full restore means the source is repopulated — the earlier
+            // "Free Up Source" no longer applies.
+            if failed == 0 {
+                job.sourceTrashedAt = nil
+                job.sourceTrashedCount = nil
+            }
+            job.statusMessage = failed == 0
+                ? "Restored \(restored) file(s) to “\(job.sourceVolume.name)”. Source and destination match again."
+                : "Restored \(restored) file(s); \(failed) could not be restored\(failMsg.map { " (\($0))" } ?? "")."
+
+            let finalJob = job
+            let allRestored = failed == 0
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.restoreRunning.remove(jobID)
+                if allRestored { self.sourceMissingPaths[jobID] = nil }
                 if let idx = self.jobs.firstIndex(where: { $0.id == jobID }) {
                     self.jobs[idx] = finalJob
                     self.store.save(finalJob, force: true)
@@ -624,32 +701,33 @@ final class AppState {
 
     // MARK: Drag-and-drop / Finder service entry point
 
-    /// One entry point for both the in-app drop zone and the Finder
-    /// "Copy with CopyWatch" right-click service. With a default destination
-    /// set, the copy starts immediately (ShotPut-Pro style); otherwise New
-    /// Job opens prefilled with the dropped items so the user picks one.
+    /// Sources dropped onto the app (or sent from the Finder service) that are
+    /// waiting for the user to choose a destination in the drop prompt.
+    var pendingDrop: [String]?
+
+    /// One entry point for the in-app drop zone and the Finder "Copy with
+    /// CopyWatch" service. It never copies straight to a default — it always
+    /// raises the drop prompt so the user confirms where each drop goes.
     func handleIncomingSources(_ paths: [String]) {
         let valid = paths.filter { FileManager.default.fileExists(atPath: $0) }
         guard !valid.isEmpty else { return }
-        if let preset = destinationPresets.first(where: \.isDefault) {
-            startDrop(valid, into: preset)
-        } else {
-            pendingSourcePaths = valid
-        }
+        pendingDrop = valid
     }
 
     /// Drop directly onto a specific destination preset (in the Destinations
-    /// list) — copies there regardless of which preset is marked default.
+    /// list) — an explicit choice, so it copies straight there without a prompt.
     func handleIncomingSources(_ paths: [String], destination preset: DestinationPreset) {
         let valid = paths.filter { FileManager.default.fileExists(atPath: $0) }
         guard !valid.isEmpty else { return }
-        startDrop(valid, into: preset)
+        startCopy(valid, toFolder: preset.path, label: preset.name)
     }
 
-    private func startDrop(_ paths: [String], into preset: DestinationPreset) {
-        createJob(sourcePaths: paths, destParentPath: preset.path, verify: true)
+    /// Begin a copy of `paths` into `folder` — used by the drop prompt for both
+    /// a chosen preset and a freshly browsed folder.
+    func startCopy(_ paths: [String], toFolder folder: String, label: String? = nil) {
+        createJob(sourcePaths: paths, destParentPath: folder, verify: true)
         Notifier.notify(
             title: "Copy started",
-            body: "\(paths.count == 1 ? (paths[0] as NSString).lastPathComponent : "\(paths.count) items") → \(preset.name)")
+            body: "\(paths.count == 1 ? (paths[0] as NSString).lastPathComponent : "\(paths.count) items") → \(label ?? (folder as NSString).lastPathComponent)")
     }
 }

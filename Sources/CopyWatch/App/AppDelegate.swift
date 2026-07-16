@@ -13,6 +13,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
     }
 
+    /// Files dropped on the Dock icon or opened via `open -a CopyWatch …` —
+    /// same destination prompt as an in-window drop.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        appState.handleIncomingSources(urls.map(\.path))
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     /// Invoked by macOS when the user picks Finder ▸ right-click ▸ Services ▸
     /// "Copy with CopyWatch". Declared in Info.plist's NSServices; the
     /// selector name must match NSMessage there exactly.

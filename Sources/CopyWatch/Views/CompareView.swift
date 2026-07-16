@@ -86,7 +86,7 @@ struct CompareView: View {
             TextField("Folder path", text: path)
                 .textFieldStyle(.roundedBorder)
                 .font(.callout.monospaced())
-            Button("Choose…") {
+            Button("Choose") {
                 let panel = NSOpenPanel()
                 panel.canChooseDirectories = true
                 panel.canChooseFiles = false
@@ -122,7 +122,7 @@ struct ComparisonCard: View {
                 Button(isExpanded ? "Hide details" : "Details") { toggle() }
                     .buttonStyle(.link)
                 Menu {
-                    Button("Export CSV…") { exportCSV() }
+                    Button("Export CSV") { exportCSV() }
                     Button("Delete", role: .destructive) { delete() }
                 } label: {
                     Image(systemName: "ellipsis.circle")

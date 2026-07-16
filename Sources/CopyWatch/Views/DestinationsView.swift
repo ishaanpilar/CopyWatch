@@ -26,7 +26,7 @@ struct DestinationsView: View {
                     } description: {
                         Text("Add one so drag-and-drop knows where to copy to.")
                     } actions: {
-                        Button("Add Destination…") { showAdd = true }
+                        Button("Add Destination") { showAdd = true }
                             .buttonStyle(.borderedProminent)
                     }
                     .frame(maxWidth: .infinity, minHeight: 200)
@@ -39,7 +39,7 @@ struct DestinationsView: View {
                     Button {
                         showAdd = true
                     } label: {
-                        Label("Add Destination…", systemImage: "plus")
+                        Label("Add Destination", systemImage: "plus")
                     }
                 }
             }
@@ -126,7 +126,7 @@ private struct AddDestinationSheet: View {
                     TextField("Where copies land", text: $path)
                         .textFieldStyle(.roundedBorder)
                         .disabled(true)
-                    Button("Choose…") { choose() }
+                    Button("Choose") { choose() }
                 }
             }
             HStack {

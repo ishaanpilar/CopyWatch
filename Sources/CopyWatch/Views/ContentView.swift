@@ -10,6 +10,12 @@ enum SidebarSelection: Hashable {
     case about
 }
 
+/// Identifiable wrapper so a dropped-source list can drive a `.sheet(item:)`.
+private struct DroppedSources: Identifiable {
+    let paths: [String]
+    var id: String { paths.joined(separator: "\u{0}") }
+}
+
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var selection: SidebarSelection?
@@ -18,6 +24,7 @@ struct ContentView: View {
     @State private var newJobDest = ""
     @State private var isDropTargeted = false
     @State private var lastNewestJobID: UUID?
+    @State private var dropSources: [String]?
 
     var body: some View {
         NavigationSplitView {
@@ -84,7 +91,7 @@ struct ContentView: View {
         }
         .navigationTitle("CopyWatch")
         .dropDestination(for: URL.self) { items, _ in
-            guard !showNewJob else { return false }
+            guard !showNewJob, dropSources == nil else { return false }
             appState.handleIncomingSources(items.map(\.path))
             return true
         } isTargeted: { isDropTargeted = $0 }
@@ -95,7 +102,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(Color.accentColor, lineWidth: 3, antialiased: true)
                         .padding(8)
-                    Label("Drop to start a copy job", systemImage: "square.and.arrow.down.on.square")
+                    Label("Drop to choose a destination", systemImage: "square.and.arrow.down.on.square")
                         .font(.title2.bold())
                         .padding(20)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -103,12 +110,16 @@ struct ContentView: View {
                 .allowsHitTesting(false)
             }
         }
-        .onChange(of: appState.pendingSourcePaths) { _, paths in
+        .sheet(item: Binding(
+            get: { dropSources.map { DroppedSources(paths: $0) } },
+            set: { dropSources = $0?.paths }
+        )) { dropped in
+            DropDestinationSheet(sources: dropped.paths)
+        }
+        .onChange(of: appState.pendingDrop) { _, paths in
             guard let paths, !paths.isEmpty else { return }
-            newJobSources = paths
-            newJobDest = ""
-            showNewJob = true
-            appState.pendingSourcePaths = nil
+            dropSources = paths
+            appState.pendingDrop = nil
         }
         .onAppear {
             // Seed so launch (with existing history) doesn't look like a new

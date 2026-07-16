@@ -86,7 +86,7 @@ struct VolumeView: View {
             Button {
                 pickSources(on: volume) { onNewJob($0, nil) }
             } label: {
-                Label("Copy From This Drive…", systemImage: "square.and.arrow.up.on.square")
+                Label("Copy From This Drive", systemImage: "square.and.arrow.up.on.square")
             }
             .buttonStyle(.borderedProminent)
             .help("Pick folders or files on “\(volume.name)” to copy somewhere else")
@@ -94,7 +94,7 @@ struct VolumeView: View {
             Button {
                 pickDestination(on: volume) { onNewJob([], $0) }
             } label: {
-                Label("Back Up Onto This Drive…", systemImage: "square.and.arrow.down.on.square")
+                Label("Back Up Onto This Drive", systemImage: "square.and.arrow.down.on.square")
             }
             .help("Pick where on “\(volume.name)” a copy should land")
 

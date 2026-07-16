@@ -43,28 +43,47 @@ struct JobDetailView: View {
             }
 
             if let candidates = appState.trashCandidates[job.id], !candidates.isEmpty {
-                HStack {
-                    Label(
-                        "\(candidates.count) file(s) deleted from the destination were found in the Trash.",
-                        systemImage: "trash.circle")
-                        .font(.callout)
-                    Spacer()
-                    if appState.restoreRunning.contains(job.id) {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button {
-                            appState.restoreFromTrash(job.id)
-                        } label: {
-                            Label("Restore from Trash", systemImage: "arrow.uturn.backward")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
+                actionBanner(
+                    "\(candidates.count) file(s) deleted from the destination were found in the Trash.",
+                    icon: "trash.circle",
+                    button: "Restore from Trash",
+                    running: appState.restoreRunning.contains(job.id)) {
+                    appState.restoreFromTrash(job.id)
                 }
-                .padding(8)
-                .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            if let missing = appState.sourceMissingPaths[job.id], !missing.isEmpty {
+                actionBanner(
+                    "\(missing.count) source file(s) are no longer on “\(job.sourceVolume.name)”. The destination copy is intact — restore them to the source drive.",
+                    icon: "externaldrive.badge.exclamationmark",
+                    button: "Restore to Source",
+                    running: appState.restoreRunning.contains(job.id)) {
+                    appState.restoreToSource(job.id)
+                }
             }
         }
         .padding()
+    }
+
+    @ViewBuilder
+    private func actionBanner(
+        _ text: String, icon: String, button: String,
+        running: Bool, action: @escaping () -> Void
+    ) -> some View {
+        HStack {
+            Label(text, systemImage: icon).font(.callout)
+            Spacer()
+            if running {
+                ProgressView().controlSize(.small)
+            } else {
+                Button(action: action) {
+                    Label(button, systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(8)
+        .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var infoIcon: String {
@@ -125,7 +144,7 @@ struct JobDetailView: View {
                 Button {
                     showCleanupSheet = true
                 } label: {
-                    Label("Free Up Source…", systemImage: "trash")
+                    Label("Free Up Source", systemImage: "trash")
                 }
                 .help("Move the copied originals to the Trash (safe, recoverable)")
             }
@@ -135,7 +154,7 @@ struct JobDetailView: View {
                     Button("Reveal Source in Finder") { reveal(job.sourcePath) }
                 }
                 Button("Reveal Destination in Finder") { reveal(job.destPath) }
-                Button("Export Manifest as CSV…") { exportCSV() }
+                Button("Export Manifest as CSV") { exportCSV() }
                 if !job.status.isActive {
                     Divider()
                     Button("Delete Job Record", role: .destructive) {
