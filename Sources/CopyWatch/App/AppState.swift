@@ -18,6 +18,10 @@ final class AppState {
     var volumes: [MountedVolume] = []
     var devices: [CameraDeviceInfo] = []
     var destinationPresets: [DestinationPreset] = []
+    var benchmarks: [BenchmarkResult] = []
+    var benchmarkPhase: Benchmark.Phase?
+    var benchmarkVolumePath: String?
+    var benchmarkError: String?
 
     let store: JobStore
     @ObservationIgnored private var engines: [UUID: any JobRunning] = [:]
@@ -31,6 +35,7 @@ final class AppState {
         jobs = store.loadJobs().sorted { $0.createdAt > $1.createdAt }
         comparisons = store.loadComparisons().sorted { $0.date > $1.date }
         destinationPresets = store.loadDestinations()
+        benchmarks = store.loadBenchmarks().sorted { $0.date > $1.date }
 
         // Anything that claimed to be moving when the app died was interrupted.
         for i in jobs.indices {
@@ -713,6 +718,45 @@ final class AppState {
             store.delete(record)
         }
         comparisons.removeAll { $0.id == id }
+    }
+
+    // MARK: Transfer benchmark
+
+    var benchmarkRunning: Bool { benchmarkVolumePath != nil }
+
+    func runBenchmark(_ volume: MountedVolume, testBytes: Int64 = 512 * 1024 * 1024) {
+        guard benchmarkVolumePath == nil else { return }
+        benchmarkVolumePath = volume.path
+        benchmarkError = nil
+        benchmarkPhase = .preparing
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let result = try Benchmark.run(
+                    volumeName: volume.name, volumePath: volume.path,
+                    volumeUUID: volume.uuid, testBytes: testBytes
+                ) { phase in
+                    Task { @MainActor [weak self] in self?.benchmarkPhase = phase }
+                }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.benchmarks.insert(result, at: 0)
+                    self.store.saveBenchmarks(self.benchmarks)
+                    self.benchmarkVolumePath = nil
+                    self.benchmarkPhase = nil
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.benchmarkVolumePath = nil
+                    self?.benchmarkPhase = nil
+                    self?.benchmarkError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func deleteBenchmark(_ id: UUID) {
+        benchmarks.removeAll { $0.id == id }
+        store.saveBenchmarks(benchmarks)
     }
 
     // MARK: Destination presets

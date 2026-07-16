@@ -91,6 +91,21 @@ final class JobStore: @unchecked Sendable {
         return (try? JSONDecoder().decode([DestinationPreset].self, from: data)) ?? []
     }
 
+    // MARK: Benchmarks
+
+    private var benchmarksURL: URL { root.appendingPathComponent("benchmarks.json") }
+
+    func saveBenchmarks(_ results: [BenchmarkResult]) {
+        queue.sync { [self] in write(results, to: benchmarksURL) }
+    }
+
+    func loadBenchmarks() -> [BenchmarkResult] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: benchmarksURL) else { return [] }
+        return (try? decoder.decode([BenchmarkResult].self, from: data)) ?? []
+    }
+
     // MARK: Plumbing
 
     private func write<T: Encodable>(_ value: T, to url: URL) {

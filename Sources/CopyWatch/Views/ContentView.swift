@@ -5,6 +5,7 @@ enum SidebarSelection: Hashable {
     case job(UUID)
     case compare
     case destinations
+    case benchmark
     case device(String)
     case volume(String)
     case about
@@ -42,6 +43,8 @@ struct ContentView: View {
                 CompareView()
             case .destinations:
                 DestinationsView()
+            case .benchmark:
+                BenchmarkView()
             case .device(let id):
                 DeviceView(deviceID: id) { jobID in
                     selection = .job(jobID)

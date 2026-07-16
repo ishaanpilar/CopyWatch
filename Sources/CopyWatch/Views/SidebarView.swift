@@ -20,6 +20,8 @@ struct SidebarView: View {
                     .tag(SidebarSelection.compare)
                 Label("Destinations", systemImage: "externaldrive.badge.plus")
                     .tag(SidebarSelection.destinations)
+                Label("Benchmark", systemImage: "gauge.with.dots.needle.67percent")
+                    .tag(SidebarSelection.benchmark)
             }
 
             Section("Devices") {
