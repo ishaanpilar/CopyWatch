@@ -10,13 +10,14 @@ struct NewJobSheet: View {
     @State private var sourcePaths: [String]
     @State private var destParentPath: String
     @State private var verify = true
+    @State private var saveAsDefaultDestination = false
 
-    init(initialSource: String = "", initialDest: String = "",
+    init(initialSources: [String] = [], initialDest: String = "",
          onCreate: @escaping ([String], String, Bool) -> Void,
          onPickDevice: ((String) -> Void)? = nil) {
         self.onCreate = onCreate
         self.onPickDevice = onPickDevice
-        _sourcePaths = State(initialValue: initialSource.isEmpty ? [] : [initialSource])
+        _sourcePaths = State(initialValue: initialSources)
         _destParentPath = State(initialValue: initialDest)
     }
 
@@ -64,9 +65,15 @@ struct NewJobSheet: View {
                     .truncationMode(.middle)
             }
 
+            Toggle("Verify after copy", isOn: $verify)
+                .help("Reads every copied file back and confirms its checksum matches the source")
+
+            if !destParentPath.isEmpty {
+                Toggle("Remember this as my default destination", isOn: $saveAsDefaultDestination)
+                    .help("Next time, dropping files onto CopyWatch copies straight here — no prompt")
+            }
+
             HStack {
-                Toggle("Verify after copy", isOn: $verify)
-                    .help("Reads every copied file back and confirms its checksum matches the source")
                 Spacer()
                 ForEach(appState.devices) { device in
                     Button("Back up “\(device.name)” instead…") {
@@ -84,6 +91,12 @@ struct NewJobSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Start Copy") {
+                    if saveAsDefaultDestination {
+                        appState.addDestinationPreset(
+                            name: (destParentPath as NSString).lastPathComponent,
+                            path: destParentPath)
+                        appState.setDefaultDestination(appState.destinationPresets.last!.id)
+                    }
                     onCreate(sourcePaths, destParentPath, verify)
                     dismiss()
                 }

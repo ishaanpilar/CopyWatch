@@ -16,6 +16,11 @@ final class AppState {
     var comparisons: [ComparisonRecord] = []
     var volumes: [MountedVolume] = []
     var devices: [CameraDeviceInfo] = []
+    var destinationPresets: [DestinationPreset] = []
+    /// Sources that arrived via drag-and-drop or the Finder "Copy with
+    /// CopyWatch" service and have no default destination to go to
+    /// automatically — the UI opens New Job prefilled with these.
+    var pendingSourcePaths: [String]?
 
     let store: JobStore
     @ObservationIgnored private var engines: [UUID: any JobRunning] = [:]
@@ -28,6 +33,7 @@ final class AppState {
         self.store = store
         jobs = store.loadJobs().sorted { $0.createdAt > $1.createdAt }
         comparisons = store.loadComparisons().sorted { $0.date > $1.date }
+        destinationPresets = store.loadDestinations()
 
         // Anything that claimed to be moving when the app died was interrupted.
         for i in jobs.indices {
@@ -589,5 +595,61 @@ final class AppState {
             store.delete(record)
         }
         comparisons.removeAll { $0.id == id }
+    }
+
+    // MARK: Destination presets
+
+    func addDestinationPreset(name: String, path: String) {
+        let preset = DestinationPreset(
+            id: UUID(), name: name, path: path, isDefault: destinationPresets.isEmpty)
+        destinationPresets.append(preset)
+        store.saveDestinations(destinationPresets)
+    }
+
+    func removeDestinationPreset(_ id: UUID) {
+        let wasDefault = destinationPresets.first { $0.id == id }?.isDefault ?? false
+        destinationPresets.removeAll { $0.id == id }
+        if wasDefault, !destinationPresets.isEmpty {
+            destinationPresets[0].isDefault = true
+        }
+        store.saveDestinations(destinationPresets)
+    }
+
+    func setDefaultDestination(_ id: UUID) {
+        for i in destinationPresets.indices {
+            destinationPresets[i].isDefault = (destinationPresets[i].id == id)
+        }
+        store.saveDestinations(destinationPresets)
+    }
+
+    // MARK: Drag-and-drop / Finder service entry point
+
+    /// One entry point for both the in-app drop zone and the Finder
+    /// "Copy with CopyWatch" right-click service. With a default destination
+    /// set, the copy starts immediately (ShotPut-Pro style); otherwise New
+    /// Job opens prefilled with the dropped items so the user picks one.
+    func handleIncomingSources(_ paths: [String]) {
+        let valid = paths.filter { FileManager.default.fileExists(atPath: $0) }
+        guard !valid.isEmpty else { return }
+        if let preset = destinationPresets.first(where: \.isDefault) {
+            startDrop(valid, into: preset)
+        } else {
+            pendingSourcePaths = valid
+        }
+    }
+
+    /// Drop directly onto a specific destination preset (in the Destinations
+    /// list) — copies there regardless of which preset is marked default.
+    func handleIncomingSources(_ paths: [String], destination preset: DestinationPreset) {
+        let valid = paths.filter { FileManager.default.fileExists(atPath: $0) }
+        guard !valid.isEmpty else { return }
+        startDrop(valid, into: preset)
+    }
+
+    private func startDrop(_ paths: [String], into preset: DestinationPreset) {
+        createJob(sourcePaths: paths, destParentPath: preset.path, verify: true)
+        Notifier.notify(
+            title: "Copy started",
+            body: "\(paths.count == 1 ? (paths[0] as NSString).lastPathComponent : "\(paths.count) items") → \(preset.name)")
     }
 }

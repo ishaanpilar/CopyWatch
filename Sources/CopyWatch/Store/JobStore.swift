@@ -78,6 +78,19 @@ final class JobStore: @unchecked Sendable {
         queue.async { [self] in try? FileManager.default.removeItem(at: compareURL(record.id)) }
     }
 
+    // MARK: Destination presets — small list, always written whole and in full.
+
+    private var destinationsURL: URL { root.appendingPathComponent("destinations.json") }
+
+    func saveDestinations(_ presets: [DestinationPreset]) {
+        queue.sync { [self] in write(presets, to: destinationsURL) }
+    }
+
+    func loadDestinations() -> [DestinationPreset] {
+        guard let data = try? Data(contentsOf: destinationsURL) else { return [] }
+        return (try? JSONDecoder().decode([DestinationPreset].self, from: data)) ?? []
+    }
+
     // MARK: Plumbing
 
     private func write<T: Encodable>(_ value: T, to url: URL) {
