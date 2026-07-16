@@ -78,22 +78,15 @@ struct SidebarView: View {
                         .selectionDisabled()
                 }
             }
+
+            // Same row style as everything above — just last, so it reads as
+            // a quiet final stop rather than a featured tool.
+            Section {
+                Label("About CopyWatch", systemImage: "info.circle")
+                    .tag(SidebarSelection.about)
+            }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            // Discrete About entry pinned to the very bottom of the sidebar.
-            Button {
-                selection = .about
-            } label: {
-                Label("About CopyWatch", systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
         .alert("Could not eject", isPresented: .init(
             get: { ejectError != nil },
             set: { if !$0 { ejectError = nil } }

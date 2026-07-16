@@ -3,6 +3,8 @@ import AppKit
 
 /// In-app About screen (also reachable via CopyWatch menu → About CopyWatch).
 struct AboutView: View {
+    @State private var updateStatus: UpdateStatus = .idle
+
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
@@ -10,40 +12,105 @@ struct AboutView: View {
     }
 
     var body: some View {
-        VStack(spacing: 14) {
-            Spacer()
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 128, height: 128)
-            Text("CopyWatch")
-                .font(.largeTitle.bold())
-            Text("Version \(version)")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(spacing: 16) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 112, height: 112)
+                    .padding(.top, 24)
 
-            Text("Created by Ishaan Pilar")
-                .font(.title3.weight(.medium))
-                .padding(.top, 6)
+                VStack(spacing: 4) {
+                    Text("CopyWatch")
+                        .font(.largeTitle.bold())
+                    Text("Version \(version)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
 
-            Text("Verified, resumable file backups for filmmakers — checksummed copy jobs, interrupted-copy rescue, folder comparison, and iPhone backup.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+                updateRow
 
-            HStack(spacing: 16) {
-                Link("GitHub", destination: URL(string: "https://github.com/ishaanpilar/CopyWatch")!)
-                Link("Report an issue", destination: URL(string: "https://github.com/ishaanpilar/CopyWatch/issues")!)
+                Divider().frame(maxWidth: 420)
+
+                VStack(spacing: 10) {
+                    Text("A note from Ishaan Pilar")
+                        .font(.headline)
+                    Text("""
+                    I built CopyWatch after watching how much guesswork goes into copying and backing up files — did everything actually transfer? What happens if the drive disconnects halfway through? Which file was I on when it crashed? I ran into these questions myself often enough that I decided to build something that answers them for good, and I wanted to share it with anyone else who deals with the same thing.
+                    """)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+                    Text("— Ishaan Pilar")
+                        .font(.callout.italic())
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider().frame(maxWidth: 420)
+
+                HStack(spacing: 20) {
+                    Link(destination: URL(string: "https://github.com/ishaanpilar/CopyWatch")!) {
+                        Label("GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    Link(destination: URL(string: "https://github.com/ishaanpilar/CopyWatch/releases/latest")!) {
+                        Label("Latest Release", systemImage: "arrow.down.circle")
+                    }
+                    Link(destination: URL(string: "https://github.com/ishaanpilar/CopyWatch/issues")!) {
+                        Label("Report an Issue", systemImage: "exclamationmark.bubble")
+                    }
+                }
+                .padding(.top, 2)
+
+                Text("© 2026 Ishaan Pilar")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
             }
-            .padding(.top, 4)
-
-            Spacer()
-            Text("© 2026 Ishaan Pilar")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .padding(.bottom, 12)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("About")
+    }
+
+    @ViewBuilder private var updateRow: some View {
+        switch updateStatus {
+        case .idle:
+            Button {
+                Task {
+                    updateStatus = .checking
+                    updateStatus = await UpdateChecker.check()
+                }
+            } label: {
+                Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
+            }
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking for updates…").font(.callout).foregroundStyle(.secondary)
+            }
+        case .upToDate:
+            Label("You're up to date", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.callout)
+        case .updateAvailable(let newVersion, let url):
+            VStack(spacing: 6) {
+                Label("Version \(newVersion) is available", systemImage: "arrow.up.circle.fill")
+                    .foregroundStyle(.blue)
+                    .font(.callout.bold())
+                Link("Download from GitHub", destination: url)
+            }
+        case .failed(let message):
+            VStack(spacing: 6) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+                Button("Try Again") {
+                    Task {
+                        updateStatus = .checking
+                        updateStatus = await UpdateChecker.check()
+                    }
+                }
+            }
+        }
     }
 }
