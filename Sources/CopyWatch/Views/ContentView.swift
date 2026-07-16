@@ -42,8 +42,8 @@ struct ContentView: View {
             case .volume(let path):
                 VolumeView(
                     volumePath: path,
-                    onNewJob: { source, dest in
-                        newJobSources = source.map { [$0] } ?? []
+                    onNewJob: { sources, dest in
+                        newJobSources = sources
                         newJobDest = dest ?? ""
                         showNewJob = true
                     },

@@ -324,7 +324,9 @@ struct DeviceView: View {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
+        panel.canCreateDirectories = true
         panel.prompt = "Select"
+        panel.message = "Choose or create a folder to back up into."
         if panel.runModal() == .OK, let url = panel.url {
             destParentPath = url.path
         }

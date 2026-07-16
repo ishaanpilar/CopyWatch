@@ -127,7 +127,9 @@ struct NewJobSheet: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
         panel.prompt = "Select"
+        panel.message = "Choose or create a folder to copy into."
         if panel.runModal() == .OK, let url = panel.url {
             destParentPath = url.path
         }

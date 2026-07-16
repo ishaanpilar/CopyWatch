@@ -6,8 +6,8 @@ import AppKit
 struct VolumeView: View {
     @Environment(AppState.self) private var appState
     let volumePath: String
-    /// (prefill source, prefill destination) → opens the New Job sheet.
-    let onNewJob: (String?, String?) -> Void
+    /// (prefill sources, prefill destination) → opens the New Job sheet.
+    let onNewJob: ([String], String?) -> Void
     let onSelectJob: (UUID) -> Void
 
     @State private var ejectError: String?
@@ -84,15 +84,15 @@ struct VolumeView: View {
     private func actions(_ volume: MountedVolume) -> some View {
         HStack(spacing: 10) {
             Button {
-                pickFolder(on: volume, prompt: "Copy From") { onNewJob($0, nil) }
+                pickSources(on: volume) { onNewJob($0, nil) }
             } label: {
                 Label("Copy From This Drive…", systemImage: "square.and.arrow.up.on.square")
             }
             .buttonStyle(.borderedProminent)
-            .help("Pick a folder on “\(volume.name)” to copy somewhere else")
+            .help("Pick folders or files on “\(volume.name)” to copy somewhere else")
 
             Button {
-                pickFolder(on: volume, prompt: "Copy Here") { onNewJob(nil, $0) }
+                pickDestination(on: volume) { onNewJob([], $0) }
             } label: {
                 Label("Back Up Onto This Drive…", systemImage: "square.and.arrow.down.on.square")
             }
@@ -140,12 +140,29 @@ struct VolumeView: View {
         }
     }
 
-    private func pickFolder(on volume: MountedVolume, prompt: String,
-                            then use: (String) -> Void) {
+    /// Pick what to copy — folders or individual files, multiple allowed.
+    private func pickSources(on volume: MountedVolume, then use: ([String]) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        panel.prompt = "Copy From"
+        panel.message = "Choose folders or files on “\(volume.name)” to copy."
+        panel.directoryURL = URL(fileURLWithPath: volume.path)
+        if panel.runModal() == .OK {
+            use(panel.urls.map(\.path))
+        }
+    }
+
+    /// Pick where a copy lands — a folder, with a New Folder button available.
+    private func pickDestination(on volume: MountedVolume, then use: (String) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.prompt = prompt
+        panel.canCreateDirectories = true
+        panel.prompt = "Copy Here"
+        panel.message = "Choose or create a folder on “\(volume.name)” to copy into."
         panel.directoryURL = URL(fileURLWithPath: volume.path)
         if panel.runModal() == .OK, let url = panel.url {
             use(url.path)

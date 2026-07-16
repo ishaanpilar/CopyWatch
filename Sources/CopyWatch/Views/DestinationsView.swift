@@ -150,7 +150,9 @@ private struct AddDestinationSheet: View {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
+        panel.canCreateDirectories = true
         panel.prompt = "Select"
+        panel.message = "Choose or create a folder to use as a destination."
         if panel.runModal() == .OK, let url = panel.url {
             path = url.path
             if name.isEmpty { name = url.lastPathComponent }
