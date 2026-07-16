@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import Observation
 import ImageCaptureCore
 
@@ -230,7 +231,33 @@ final class AppState {
         if let job = jobs.first(where: { $0.id == jobID }) {
             store.delete(job)
         }
+        try? FileManager.default.removeItem(at: Certificate.url(for: jobID))
         jobs.removeAll { $0.id == jobID }
+    }
+
+    // MARK: Integrity certificates
+
+    private func generateCertificate(for job: CopyJob) {
+        Task.detached(priority: .utility) { Certificate.generate(for: job) }
+    }
+
+    func hasCertificate(_ jobID: UUID) -> Bool { Certificate.exists(for: jobID) }
+
+    /// Open the certificate in the browser (generating it on demand if needed).
+    func openCertificate(for job: CopyJob) {
+        let url = Certificate.exists(for: job.id)
+            ? Certificate.url(for: job.id)
+            : Certificate.generate(for: job)
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Export a copy of the certificate to a user-chosen location.
+    func exportCertificate(for job: CopyJob, to destination: URL) {
+        let src = Certificate.exists(for: job.id)
+            ? Certificate.url(for: job.id)
+            : Certificate.generate(for: job)
+        try? FileManager.default.removeItem(at: destination)
+        try? FileManager.default.copyItem(at: src, to: destination)
     }
 
     private func apply(_ snapshot: CopyJob) {
@@ -243,11 +270,13 @@ final class AppState {
             switch snapshot.status {
             case .completed:
                 engines[snapshot.id] = nil
+                generateCertificate(for: snapshot)
                 Notifier.notify(
                     title: "Backup verified ✓",
                     body: "\(snapshot.name): \(snapshot.totalFiles) files, \(Format.bytes(snapshot.totalBytes))")
             case .completedWithErrors:
                 engines[snapshot.id] = nil
+                generateCertificate(for: snapshot)
                 Notifier.notify(
                     title: "Backup finished with errors",
                     body: "\(snapshot.name): \(snapshot.failedFiles) file(s) failed.")

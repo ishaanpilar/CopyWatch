@@ -72,6 +72,11 @@ enum Headless {
 
         let final = engine.job
         store.save(final, force: true)
+        var certLine = ""
+        if final.status == .completed || final.status == .completedWithErrors {
+            let url = Certificate.generate(for: final)
+            certLine = "\n  certificate: \(url.path)\n  cert ID:     \(Certificate.certificateID(for: final))"
+        }
         print("""
 
         Result: \(final.status.label)\(final.statusMessage.map { " — \($0)" } ?? "")
@@ -79,7 +84,7 @@ enum Headless {
           skipped:  \(final.skippedFiles) (already at destination)
           verified: \(final.verifiedFiles)
           failed:   \(final.failedFiles)
-          bytes:    \(Format.bytes(final.doneBytes)) / \(Format.bytes(final.totalBytes))
+          bytes:    \(Format.bytes(final.doneBytes)) / \(Format.bytes(final.totalBytes))\(certLine)
         """)
         exit(final.status == .completed ? 0 : 1)
     }

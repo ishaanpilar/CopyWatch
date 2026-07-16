@@ -175,11 +175,27 @@ struct JobDetailView: View {
                 .help("Move the copied originals to the Trash (safe, recoverable)")
             }
 
+            if (job.status == .completed || job.status == .completedWithErrors) {
+                Button {
+                    appState.openCertificate(for: job)
+                } label: {
+                    Label("Certificate", systemImage: "checkmark.seal")
+                }
+                .help("Open the integrity certificate for this backup")
+            }
+
             Menu {
                 if !job.isDeviceJob {
                     Button("Reveal Source in Finder") { reveal(job.sourcePath) }
                 }
-                Button("Reveal Destination in Finder") { reveal(job.destPath) }
+                ForEach(Array(job.allDestinations.enumerated()), id: \.offset) { _, dest in
+                    Button("Reveal \(dest.volume.name) in Finder") { reveal(dest.path) }
+                }
+                Divider()
+                if job.status == .completed || job.status == .completedWithErrors {
+                    Button("View Integrity Certificate") { appState.openCertificate(for: job) }
+                    Button("Export Certificate…") { exportCertificate() }
+                }
                 Button("Export Manifest as CSV") { exportCSV() }
                 if !job.status.isActive {
                     Divider()
@@ -193,6 +209,14 @@ struct JobDetailView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
         }
+    }
+
+    private func exportCertificate() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.html]
+        panel.nameFieldStringValue = job.name.replacingOccurrences(of: "/", with: "-") + " — certificate.html"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        appState.exportCertificate(for: job, to: url)
     }
 
     // MARK: Comparison dashboard
