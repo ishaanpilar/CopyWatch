@@ -69,29 +69,31 @@ final class AppState {
     /// Create a job from one or more selected sources — a single folder (the
     /// common case), or a mix of individual files and folders picked together
     /// (Scanner.scanSelection finds their common ancestor and preserves enough
-    /// structure to avoid collisions).
-    func createJob(sourcePaths: [String], destParentPath: String, verify: Bool) {
-        guard !sourcePaths.isEmpty else { return }
+    /// structure to avoid collisions). Pass more than one `destParentPaths` to
+    /// back up the same source to several drives in one pass.
+    func createJob(sourcePaths: [String], destParentPaths: [String], verify: Bool) {
+        guard !sourcePaths.isEmpty, let primaryParent = destParentPaths.first else { return }
         let isSingleFolder = sourcePaths.count == 1
             && (try? URL(fileURLWithPath: sourcePaths[0]).resourceValues(forKeys: [.isDirectoryKey]))?
                 .isDirectory == true
+        let extraParents = Array(destParentPaths.dropFirst())
 
         // Placeholder root/dest until the scan resolves the real common ancestor;
         // refined below once scanSelection returns.
         let provisionalName = isSingleFolder
             ? CopyJob.defaultName(
                 source: sourcePaths[0],
-                dest: (destParentPath as NSString).appendingPathComponent(
+                dest: (primaryParent as NSString).appendingPathComponent(
                     (sourcePaths[0] as NSString).lastPathComponent))
-            : "\(sourcePaths.count) items → \((destParentPath as NSString).lastPathComponent)"
+            : "\(sourcePaths.count) items → \((primaryParent as NSString).lastPathComponent)"
 
         var job = CopyJob(
             id: UUID(),
             name: provisionalName,
             sourceVolume: .forPath(sourcePaths[0]),
-            destVolume: .forPath(destParentPath),
+            destVolume: .forPath(primaryParent),
             sourcePath: sourcePaths[0],
-            destPath: destParentPath
+            destPath: primaryParent
         )
         job.verifyAfterCopy = verify
         job.status = .scanning
@@ -102,21 +104,31 @@ final class AppState {
         scanTasks[jobID] = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let (root, records) = try Scanner.scanSelection(paths: sourcePaths)
-                // A single folder keeps its name at the destination; loose files
+                // A single folder keeps its name at each destination; loose files
                 // (or a mixed selection) land directly in the chosen folder, the
                 // way Finder drops them — no artificial wrapper folder.
-                let destPath = isSingleFolder
-                    ? (destParentPath as NSString).appendingPathComponent((root as NSString).lastPathComponent)
-                    : destParentPath
+                func destPath(in parent: String) -> String {
+                    isSingleFolder
+                        ? (parent as NSString).appendingPathComponent((root as NSString).lastPathComponent)
+                        : parent
+                }
+                let primaryDest = destPath(in: primaryParent)
+                let extras = extraParents.map {
+                    JobDestination(volume: .forPath($0), path: destPath(in: $0))
+                }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.mutateJob(jobID) { j in
                         j.sourcePath = root
-                        j.destPath = destPath
+                        j.destPath = primaryDest
+                        j.extraDestinations = extras
                         j.sourceVolume = .forPath(root)
-                        j.name = isSingleFolder
-                            ? CopyJob.defaultName(source: root, dest: destPath)
-                            : "\(sourcePaths.count) items → \((destParentPath as NSString).lastPathComponent)"
+                        let destLabel = extras.isEmpty
+                            ? (primaryParent as NSString).lastPathComponent
+                            : "\(destParentPaths.count) drives"
+                        j.name = isSingleFolder && extras.isEmpty
+                            ? CopyJob.defaultName(source: root, dest: primaryDest)
+                            : "\(isSingleFolder ? (root as NSString).lastPathComponent : "\(sourcePaths.count) items") → \(destLabel)"
                         j.files = records
                         j.totalFiles = records.count
                         j.totalBytes = records.reduce(0) { $0 + $1.size }
@@ -676,10 +688,21 @@ final class AppState {
 
     // MARK: Destination presets
 
-    func addDestinationPreset(name: String, path: String) {
+    func addDestinationPreset(name: String, paths: [String]) {
+        guard let primary = paths.first else { return }
         let preset = DestinationPreset(
-            id: UUID(), name: name, path: path, isDefault: destinationPresets.isEmpty)
+            id: UUID(), name: name, path: primary,
+            extraPaths: Array(paths.dropFirst()), isDefault: destinationPresets.isEmpty)
         destinationPresets.append(preset)
+        store.saveDestinations(destinationPresets)
+    }
+
+    func updateDestinationPreset(_ id: UUID, name: String, paths: [String]) {
+        guard let idx = destinationPresets.firstIndex(where: { $0.id == id }),
+              let primary = paths.first else { return }
+        destinationPresets[idx].name = name
+        destinationPresets[idx].path = primary
+        destinationPresets[idx].extraPaths = Array(paths.dropFirst())
         store.saveDestinations(destinationPresets)
     }
 
@@ -719,15 +742,19 @@ final class AppState {
     func handleIncomingSources(_ paths: [String], destination preset: DestinationPreset) {
         let valid = paths.filter { FileManager.default.fileExists(atPath: $0) }
         guard !valid.isEmpty else { return }
-        startCopy(valid, toFolder: preset.path, label: preset.name)
+        startCopy(valid, toFolders: preset.allPaths, label: preset.name)
     }
 
-    /// Begin a copy of `paths` into `folder` — used by the drop prompt for both
-    /// a chosen preset and a freshly browsed folder.
-    func startCopy(_ paths: [String], toFolder folder: String, label: String? = nil) {
-        createJob(sourcePaths: paths, destParentPath: folder, verify: true)
+    /// Begin a copy of `paths` into one or more folders — used by the drop
+    /// prompt for a chosen preset (possibly multi-destination) or a browsed folder.
+    func startCopy(_ paths: [String], toFolders folders: [String], label: String? = nil) {
+        guard !folders.isEmpty else { return }
+        createJob(sourcePaths: paths, destParentPaths: folders, verify: true)
+        let dest = label ?? (folders.count > 1
+            ? "\(folders.count) drives"
+            : (folders[0] as NSString).lastPathComponent)
         Notifier.notify(
             title: "Copy started",
-            body: "\(paths.count == 1 ? (paths[0] as NSString).lastPathComponent : "\(paths.count) items") → \(label ?? (folder as NSString).lastPathComponent)")
+            body: "\(paths.count == 1 ? (paths[0] as NSString).lastPathComponent : "\(paths.count) items") → \(dest)")
     }
 }

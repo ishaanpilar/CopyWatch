@@ -36,15 +36,22 @@ struct DropDestinationSheet: View {
                 VStack(spacing: 6) {
                     ForEach(appState.destinationPresets) { preset in
                         Button {
-                            appState.startCopy(sources, toFolder: preset.path, label: preset.name)
+                            appState.startCopy(sources, toFolders: preset.allPaths, label: preset.name)
                             dismiss()
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: "externaldrive.fill")
+                                Image(systemName: preset.isMulti ? "square.stack.3d.up.fill" : "externaldrive.fill")
                                     .foregroundStyle(preset.isDefault ? Color.accentColor : .secondary)
                                 VStack(alignment: .leading, spacing: 1) {
                                     HStack(spacing: 6) {
                                         Text(preset.name).font(.callout.bold())
+                                        if preset.isMulti {
+                                            Text("\(preset.allPaths.count) DRIVES")
+                                                .font(.caption2.bold())
+                                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                                .background(Color.secondary.opacity(0.2), in: Capsule())
+                                                .foregroundStyle(.secondary)
+                                        }
                                         if preset.isDefault {
                                             Text("DEFAULT")
                                                 .font(.caption2.bold())
@@ -53,7 +60,9 @@ struct DropDestinationSheet: View {
                                                 .foregroundStyle(Color.accentColor)
                                         }
                                     }
-                                    Text(preset.path)
+                                    Text(preset.isMulti
+                                         ? preset.allPaths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+                                         : preset.path)
                                         .font(.caption.monospaced())
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
@@ -102,7 +111,7 @@ struct DropDestinationSheet: View {
         panel.prompt = "Copy Here"
         panel.message = "Choose or create a folder to copy the dropped items into."
         if panel.runModal() == .OK, let url = panel.url {
-            appState.startCopy(sources, toFolder: url.path)
+            appState.startCopy(sources, toFolders: [url.path])
             dismiss()
         }
     }

@@ -21,7 +21,7 @@ struct ContentView: View {
     @State private var selection: SidebarSelection?
     @State private var showNewJob = false
     @State private var newJobSources: [String] = []
-    @State private var newJobDest = ""
+    @State private var newJobDests: [String] = []
     @State private var isDropTargeted = false
     @State private var lastNewestJobID: UUID?
     @State private var dropSources: [String]?
@@ -51,7 +51,7 @@ struct ContentView: View {
                     volumePath: path,
                     onNewJob: { sources, dest in
                         newJobSources = sources
-                        newJobDest = dest ?? ""
+                        newJobDests = dest.map { [$0] } ?? []
                         showNewJob = true
                     },
                     onSelectJob: { selection = .job($0) })
@@ -65,7 +65,7 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     newJobSources = []
-                    newJobDest = ""
+                    newJobDests = []
                     showNewJob = true
                 } label: {
                     Label("New Copy Job", systemImage: "plus")
@@ -76,9 +76,9 @@ struct ContentView: View {
         .sheet(isPresented: $showNewJob) {
             NewJobSheet(
                 initialSources: newJobSources,
-                initialDest: newJobDest,
-                onCreate: { sources, destParent, verify in
-                    appState.createJob(sourcePaths: sources, destParentPath: destParent, verify: verify)
+                initialDests: newJobDests,
+                onCreate: { sources, destParents, verify in
+                    appState.createJob(sourcePaths: sources, destParentPaths: destParents, verify: verify)
                     if let first = appState.jobs.first {
                         selection = .job(first.id)
                     }

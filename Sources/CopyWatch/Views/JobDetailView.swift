@@ -32,7 +32,11 @@ struct JobDetailView: View {
                 controls
             }
             PathLine(label: "From", path: job.sourcePath, volume: job.sourceVolume.name)
-            PathLine(label: "To", path: job.destPath, volume: job.destVolume.name)
+            ForEach(Array(job.allDestinations.enumerated()), id: \.offset) { index, dest in
+                PathLine(
+                    label: index == 0 ? "To" : "",
+                    path: dest.path, volume: dest.volume.name)
+            }
 
             if let message = job.statusMessage {
                 Label(message, systemImage: infoIcon)
@@ -61,8 +65,30 @@ struct JobDetailView: View {
                     appState.restoreToSource(job.id)
                 }
             }
+
+            if let failure = representativeFailure {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: failure.errorIcon ?? "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(failure.error ?? "Some files failed").font(.callout.bold())
+                        Text(failure.errorFix ?? "").font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+            }
         }
         .padding()
+    }
+
+    /// The first failed file with a diagnosis, to headline in a fix banner.
+    private var representativeFailure: FileRecord? {
+        guard !job.status.isActive || job.status == .completedWithErrors else { return nil }
+        return job.files.first { $0.status == .failed && $0.errorFix != nil }
     }
 
     @ViewBuilder
@@ -557,12 +583,13 @@ struct FileStatusView: View {
             case .verified:
                 Label("Verified", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
             case .skipped:
-                Label("Already there", systemImage: "equal.circle").foregroundStyle(.secondary)
+                Label("Verified identical", systemImage: "equal.circle").foregroundStyle(.secondary)
+                    .help("Already present at the destination and confirmed identical — skipped.")
             case .failed:
-                Label(record.error ?? "Failed", systemImage: "xmark.octagon.fill")
+                Label(record.error ?? "Failed", systemImage: record.errorIcon ?? "xmark.octagon.fill")
                     .foregroundStyle(.red)
                     .lineLimit(1)
-                    .help(record.error ?? "Failed")
+                    .help(record.errorFix ?? record.error ?? "Failed")
             }
         }
         .font(.caption)

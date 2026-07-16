@@ -6,6 +6,15 @@ import Foundation
 struct DestinationPreset: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
+    /// Primary destination folder.
     var path: String
+    /// Extra folders — a multi-destination preset copies one source to all of
+    /// these in a single pass. Empty for a normal single-folder preset, so old
+    /// saved presets decode unchanged.
+    var extraPaths: [String] = []
     var isDefault: Bool = false
+
+    /// All folders in order, primary first.
+    var allPaths: [String] { [path] + extraPaths }
+    var isMulti: Bool { !extraPaths.isEmpty }
 }
