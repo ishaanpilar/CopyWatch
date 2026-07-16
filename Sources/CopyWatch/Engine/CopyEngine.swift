@@ -68,19 +68,35 @@ final class JobEngine: @unchecked Sendable {
             return finishWaiting("Source drive “\(job.sourceVolume.name)” is not connected.")
         }
         job.sourcePath = src
-        let destParent = (job.destPath as NSString).deletingLastPathComponent
-        guard let destParentResolved = job.destVolume.resolve(destParent) else {
+        let srcRoot = URL(fileURLWithPath: job.sourcePath)
+
+        // Resolve the primary destination and any extras, refreshing their paths.
+        let primaryParent = (job.destPath as NSString).deletingLastPathComponent
+        guard let primaryResolved = job.destVolume.resolve(primaryParent) else {
             return finishWaiting("Destination drive “\(job.destVolume.name)” is not connected.")
         }
-        job.destPath = (destParentResolved as NSString)
+        job.destPath = (primaryResolved as NSString)
             .appendingPathComponent((job.destPath as NSString).lastPathComponent)
+        var destRoots = [URL(fileURLWithPath: job.destPath)]
 
-        let srcRoot = URL(fileURLWithPath: job.sourcePath)
-        let destRoot = URL(fileURLWithPath: job.destPath)
-        do {
-            try FileManager.default.createDirectory(at: destRoot, withIntermediateDirectories: true)
-        } catch {
-            return finishWaiting("Cannot create destination: \(error.localizedDescription)")
+        for i in job.extraDestinations.indices {
+            let dest = job.extraDestinations[i]
+            let parent = (dest.path as NSString).deletingLastPathComponent
+            guard let resolvedParent = dest.volume.resolve(parent) else {
+                return finishWaiting("Destination drive “\(dest.volume.name)” is not connected.")
+            }
+            let resolved = (resolvedParent as NSString)
+                .appendingPathComponent((dest.path as NSString).lastPathComponent)
+            job.extraDestinations[i].path = resolved
+            destRoots.append(URL(fileURLWithPath: resolved))
+        }
+
+        for root in destRoots {
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            } catch {
+                return finishWaiting(CopyDiagnosis.diagnose(error, path: root.path).fix)
+            }
         }
 
         // A file interrupted mid-copy resumes from its partial data.
@@ -89,12 +105,15 @@ final class JobEngine: @unchecked Sendable {
         }
         recomputeCounters()
 
-        // Recognize everything already complete at the destination
-        // (our own previous run, or a dead Finder copy being rescued).
+        // Recognize everything already complete at EVERY destination (a previous
+        // run, or a dead Finder copy). Smart duplicate detection: hash the
+        // ambiguous size-match/date-mismatch case rather than recopy blindly.
         job.status = .running
-        job.statusMessage = "Checking what's already at the destination…"
+        job.statusMessage = destRoots.count > 1
+            ? "Checking what's already at \(destRoots.count) destinations…"
+            : "Checking what's already at the destination…"
         emit(force: true)
-        Reconciler.reconcile(job: &job, destRoot: destRoot)
+        Reconciler.reconcile(job: &job, destRoots: destRoots, sourceRoot: srcRoot, deep: true)
         job.statusMessage = nil
         speedSamples.removeAll()
         emit(force: true)
@@ -102,16 +121,19 @@ final class JobEngine: @unchecked Sendable {
         for i in job.files.indices where !job.files[i].isDone && job.files[i].status != .failed {
             do {
                 try Task.checkCancellation()
-                try copyOneFile(at: i, srcRoot: srcRoot, destRoot: destRoot)
+                if destRoots.count == 1 {
+                    try copyOneFile(at: i, srcRoot: srcRoot, destRoot: destRoots[0])
+                } else {
+                    try copyOneFileMulti(at: i, srcRoot: srcRoot, destRoots: destRoots)
+                }
             } catch is CancellationError {
                 return finishStopped()
             } catch {
-                if volumeVanished(srcRoot: srcRoot, destRoot: destRoot) {
+                if volumeVanished(srcRoot: srcRoot, destRoots: destRoots) {
                     job.files[i].status = .pending
-                    return finishWaiting("A drive disconnected mid-copy. Reconnect it to resume.")
+                    return finishWaiting(CopyDiagnosis.diagnose(error, volumeVanished: true).fix)
                 }
-                job.files[i].status = .failed
-                job.files[i].error = error.localizedDescription
+                job.files[i].applyFailure(CopyDiagnosis.diagnose(error, path: job.files[i].relativePath))
                 job.failedFiles += 1
                 emit(force: true)
             }
@@ -215,8 +237,7 @@ final class JobEngine: @unchecked Sendable {
                 job.files[index].status = .verified
                 job.verifiedFiles += 1
             } else {
-                job.files[index].status = .failed
-                job.files[index].error = "Verification failed: destination checksum differs from source."
+                job.files[index].applyFailure(Self.verificationFailure())
                 job.doneFiles -= 1
                 job.failedFiles += 1
                 setBytesCopied(index, 0)
@@ -224,6 +245,166 @@ final class JobEngine: @unchecked Sendable {
             }
         }
         emit(force: true)
+    }
+
+    static func verificationFailure(at destination: String? = nil) -> CopyDiagnosis {
+        let where_ = destination.map { " at \($0)" } ?? ""
+        return .init(
+            title: "Verification failed\(where_)",
+            fix: "The copy\(where_) didn't match the source — usually a flaky cable, hub, or a failing drive. Resume to re-copy it; if it keeps happening, run a Transfer Benchmark on that drive.",
+            icon: "xmark.seal")
+    }
+
+    // MARK: One file → many destinations (read source once, write to all, verify each)
+
+    private func copyOneFileMulti(at index: Int, srcRoot: URL, destRoots: [URL]) throws {
+        let record = job.files[index]
+        let srcURL = srcRoot.appendingPathComponent(record.relativePath)
+        let fm = FileManager.default
+
+        // Smart dedup per destination: only write where it isn't already identical.
+        let needed = destRoots.filter {
+            Reconciler.classifyDeep(record, destRoot: $0, sourceRoot: srcRoot) != .match
+        }
+        if needed.isEmpty {
+            setBytesCopied(index, record.size)
+            job.files[index].status = job.verifyAfterCopy ? .verified : .copied
+            job.doneFiles += 1
+            if job.verifyAfterCopy { job.verifiedFiles += 1 }
+            emit(force: true)
+            return
+        }
+
+        job.files[index].status = .copying
+        job.currentFile = "\(record.relativePath) → \(needed.count) drive\(needed.count == 1 ? "" : "s")"
+        emit(force: true)
+
+        // Prepare a .cwpart per needed destination, adopting any partial leftover.
+        var partURLs: [URL] = []
+        for root in needed {
+            let destURL = root.appendingPathComponent(record.relativePath)
+            try fm.createDirectory(
+                at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let partURL = destURL.appendingPathExtension(String(Self.partSuffix.dropFirst()))
+            if !fm.fileExists(atPath: partURL.path), fm.fileExists(atPath: destURL.path) {
+                let attrs = try fm.attributesOfItem(atPath: destURL.path)
+                let destSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                if destSize < record.size { try fm.moveItem(at: destURL, to: partURL) }
+                else { try fm.removeItem(at: destURL) }
+            }
+            partURLs.append(partURL)
+        }
+
+        // Resume only when every destination shares a matching prefix; otherwise
+        // start them all fresh (keeps multi-destination resume correct & simple).
+        var resumeOffset: Int64 = 0
+        if partURLs.allSatisfy({ fm.fileExists(atPath: $0.path) }) {
+            resumeOffset = try commonValidPrefix(srcURL: srcURL, parts: partURLs)
+        }
+        if resumeOffset == 0 {
+            for p in partURLs where fm.fileExists(atPath: p.path) { try fm.removeItem(at: p) }
+        }
+
+        var hasher = SHA256()
+        let srcHandle = try FileHandle(forReadingFrom: srcURL)
+        defer { try? srcHandle.close() }
+
+        var handles: [FileHandle] = []
+        for p in partURLs {
+            if !fm.fileExists(atPath: p.path) { fm.createFile(atPath: p.path, contents: nil) }
+            let h = try FileHandle(forWritingTo: p)
+            try h.truncate(atOffset: UInt64(resumeOffset))
+            try h.seek(toOffset: UInt64(resumeOffset))
+            handles.append(h)
+        }
+        defer { for h in handles { try? h.close() } }
+
+        // Feed the resumed prefix (already on all parts) into the hasher.
+        var offset: Int64 = 0
+        setBytesCopied(index, 0)
+        if resumeOffset > 0 {
+            try srcHandle.seek(toOffset: 0)
+            var remaining = resumeOffset
+            while remaining > 0 {
+                try Task.checkCancellation()
+                let want = Int(min(Int64(Self.chunkSize), remaining))
+                guard let chunk = try srcHandle.read(upToCount: want), !chunk.isEmpty else { break }
+                hasher.update(data: chunk)
+                remaining -= Int64(chunk.count)
+            }
+            offset = resumeOffset
+            setBytesCopied(index, offset)
+        }
+
+        try srcHandle.seek(toOffset: UInt64(offset))
+        while true {
+            try Task.checkCancellation()
+            guard let chunk = try srcHandle.read(upToCount: Self.chunkSize), !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+            for h in handles { try h.write(contentsOf: chunk) }
+            offset += Int64(chunk.count)
+            setBytesCopied(index, offset)
+            recordSpeed(delta: Int64(chunk.count))
+            emit()
+        }
+        for h in handles { try h.close() }
+
+        let sourceHash = FileHasher.hex(hasher.finalize())
+        job.files[index].checksum = sourceHash
+
+        for (k, root) in needed.enumerated() {
+            let destURL = root.appendingPathComponent(record.relativePath)
+            let partURL = partURLs[k]
+            try? fm.setAttributes(
+                [.modificationDate: record.modificationDate], ofItemAtPath: partURL.path)
+            if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
+            try fm.moveItem(at: partURL, to: destURL)
+
+            if job.verifyAfterCopy {
+                job.currentFile = "Verifying: \(record.relativePath)"
+                emit(force: true)
+                let destHash = try FileHasher.sha256(of: destURL)
+                if destHash != sourceHash {
+                    job.files[index].applyFailure(Self.verificationFailure(at: destName(for: root)))
+                    setBytesCopied(index, 0)
+                    try? fm.removeItem(at: destURL)
+                    job.failedFiles += 1
+                    emit(force: true)
+                    return
+                }
+            }
+        }
+
+        job.files[index].status = job.verifyAfterCopy ? .verified : .copied
+        job.doneFiles += 1
+        if job.verifyAfterCopy { job.verifiedFiles += 1 }
+        emit(force: true)
+    }
+
+    /// Longest byte prefix that matches the source in EVERY part file. Reads the
+    /// source and each part once, in lockstep.
+    private func commonValidPrefix(srcURL: URL, parts: [URL]) throws -> Int64 {
+        let src = try FileHandle(forReadingFrom: srcURL)
+        defer { try? src.close() }
+        let partHandles = try parts.map { try FileHandle(forReadingFrom: $0) }
+        defer { for h in partHandles { try? h.close() } }
+        var valid: Int64 = 0
+        while true {
+            try Task.checkCancellation()
+            guard let sChunk = try src.read(upToCount: Self.chunkSize), !sChunk.isEmpty else { break }
+            for h in partHandles {
+                guard let pChunk = try h.read(upToCount: sChunk.count), pChunk == sChunk else {
+                    return valid
+                }
+            }
+            valid += Int64(sChunk.count)
+        }
+        return valid
+    }
+
+    private func destName(for root: URL) -> String {
+        if let d = job.allDestinations.first(where: { $0.path == root.path }) { return d.volume.name }
+        return (root.path as NSString).lastPathComponent
     }
 
     /// Byte-compare an existing partial against the source while feeding the
@@ -329,8 +510,9 @@ final class JobEngine: @unchecked Sendable {
         emit(force: true)
     }
 
-    private func volumeVanished(srcRoot: URL, destRoot: URL) -> Bool {
+    private func volumeVanished(srcRoot: URL, destRoots: [URL]) -> Bool {
         let fm = FileManager.default
-        return !fm.fileExists(atPath: srcRoot.path) || !fm.fileExists(atPath: destRoot.path)
+        if !fm.fileExists(atPath: srcRoot.path) { return true }
+        return destRoots.contains { !fm.fileExists(atPath: $0.path) }
     }
 }

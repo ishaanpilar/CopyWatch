@@ -17,9 +17,21 @@ struct FileRecord: Codable, Identifiable, Hashable {
     var bytesCopied: Int64 = 0
     /// Hex SHA-256 of the source, computed while copying.
     var checksum: String?
+    /// Human-readable failure title (from CopyDiagnosis).
     var error: String?
+    /// Concrete "how to fix it" hint that pairs with `error`.
+    var errorFix: String?
+    /// SF Symbol for the failure category.
+    var errorIcon: String?
 
     var isDone: Bool {
         status == .copied || status == .verified || status == .skipped
+    }
+
+    mutating func applyFailure(_ diagnosis: CopyDiagnosis) {
+        status = .failed
+        error = diagnosis.title
+        errorFix = diagnosis.fix
+        errorIcon = diagnosis.icon
     }
 }

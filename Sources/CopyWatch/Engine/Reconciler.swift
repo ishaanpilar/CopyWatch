@@ -29,12 +29,38 @@ enum Reconciler {
         return .differs
     }
 
-    /// Pre-copy reconcile: mark already-complete destination files as skipped so a
-    /// job pointed at a partial (Finder) copy only moves what's actually needed.
-    /// Partial/differing files stay pending — the copy engine sorts them out.
-    static func reconcile(job: inout CopyJob, destRoot: URL) {
+    /// Smart duplicate detection ("hash when in doubt"): an instant `.match`
+    /// when size AND mtime agree; when the size matches but the date is off
+    /// (the ambiguous case), the two files are hashed to decide identity for
+    /// real, so we never skip a genuinely different file nor needlessly recopy
+    /// an identical one whose timestamp merely drifted. `sourceRoot` supplies
+    /// the source file to hash against.
+    static func classifyDeep(_ record: FileRecord, destRoot: URL, sourceRoot: URL) -> MatchState {
+        let quick = classify(record, destRoot: destRoot)
+        guard quick == .differs else { return quick }
+        // Only the size-matches-but-date-differs case reaches here; resolve by hash.
+        let dest = destRoot.appendingPathComponent(record.relativePath)
+        let src = sourceRoot.appendingPathComponent(record.relativePath)
+        guard let dh = try? FileHasher.sha256(of: dest),
+              let sh = try? FileHasher.sha256(of: src) else {
+            return .differs
+        }
+        return dh == sh ? .match : .differs
+    }
+
+    /// Pre-copy reconcile: mark files already complete at EVERY destination as
+    /// skipped so a job only moves what's actually needed. With `deep`, the
+    /// ambiguous size-match/date-mismatch case is resolved by hashing (smart
+    /// duplicate detection) rather than assumed different.
+    static func reconcile(job: inout CopyJob, destRoots: [URL], sourceRoot: URL?, deep: Bool) {
         for i in job.files.indices where !job.files[i].isDone {
-            if case .match = classify(job.files[i], destRoot: destRoot) {
+            let completeEverywhere = destRoots.allSatisfy { root in
+                let state = (deep && sourceRoot != nil)
+                    ? classifyDeep(job.files[i], destRoot: root, sourceRoot: sourceRoot!)
+                    : classify(job.files[i], destRoot: root)
+                return state == .match
+            }
+            if completeEverywhere {
                 job.files[i].status = .skipped
                 job.files[i].bytesCopied = job.files[i].size
                 job.skippedFiles += 1
@@ -42,6 +68,11 @@ enum Reconciler {
                 job.doneBytes += job.files[i].size
             }
         }
+    }
+
+    /// Single-root convenience (unchanged callers).
+    static func reconcile(job: inout CopyJob, destRoot: URL) {
+        reconcile(job: &job, destRoots: [destRoot], sourceRoot: nil, deep: false)
     }
 
     /// Standalone comparison of two trees. `deep` hashes both sides of every

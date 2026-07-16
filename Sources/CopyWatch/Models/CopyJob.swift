@@ -28,7 +28,14 @@ enum JobStatus: String, Codable {
     }
 }
 
-/// A copy job: one source tree being copied to one destination, with a full manifest.
+/// One destination of a (possibly multi-target) copy job.
+struct JobDestination: Codable, Hashable {
+    var volume: VolumeRef
+    /// Absolute root, already including the source folder name.
+    var path: String
+}
+
+/// A copy job: one source tree copied to one or more destinations, with a full manifest.
 struct CopyJob: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
@@ -38,9 +45,21 @@ struct CopyJob: Codable, Identifiable, Hashable {
     /// Root of the tree being copied, e.g. /Volumes/CARD-A/DCIM
     /// (display-only for device jobs).
     var sourcePath: String
-    /// Root the tree is copied into (already includes the source folder name),
-    /// e.g. /Volumes/Backup/DCIM
+    /// Primary destination root the tree is copied into (already includes the
+    /// source folder name), e.g. /Volumes/Backup/DCIM
     var destPath: String
+
+    /// Additional destinations for a multi-backup (one source → many verified
+    /// copies in a single read pass). Empty for a normal single-destination
+    /// job, so old saved jobs decode unchanged.
+    var extraDestinations: [JobDestination] = []
+
+    /// All destinations in order, primary first.
+    var allDestinations: [JobDestination] {
+        [JobDestination(volume: destVolume, path: destPath)] + extraDestinations
+    }
+
+    var isMultiDestination: Bool { !extraDestinations.isEmpty }
 
     /// Set for iPhone/camera jobs: the device's persistent ID (ImageCaptureCore).
     /// The source is then the device's media catalog, not a filesystem path.

@@ -2,18 +2,19 @@ import Foundation
 
 /// CLI mode for driving the engine without the GUI — used for testing.
 ///
-///   CopyWatch --headless copy <source> <destParent> [--no-verify]
+///   CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify]
 ///   CopyWatch --headless compare <a> <b> [--deep]
 enum Headless {
     static func main(_ args: [String]) -> Never {
         switch args.first {
         case "copy" where args.count >= 3:
-            runCopy(source: args[1], destParent: args[2], verify: !args.contains("--no-verify"))
+            let parents = args[2...].filter { !$0.hasPrefix("--") }
+            runCopy(source: args[1], destParents: Array(parents), verify: !args.contains("--no-verify"))
         case "compare" where args.count >= 3:
             runCompare(a: args[1], b: args[2], deep: args.contains("--deep"))
         default:
             FileHandle.standardError.write(Data("""
-            usage: CopyWatch --headless copy <source> <destParent> [--no-verify]
+            usage: CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify]
                    CopyWatch --headless compare <a> <b> [--deep]
             \n
             """.utf8))
@@ -21,19 +22,23 @@ enum Headless {
         }
     }
 
-    private static func runCopy(source: String, destParent: String, verify: Bool) -> Never {
+    private static func runCopy(source: String, destParents: [String], verify: Bool) -> Never {
         let store = JobStore()
-        let destPath = (destParent as NSString)
-            .appendingPathComponent((source as NSString).lastPathComponent)
+        func destPath(_ parent: String) -> String {
+            (parent as NSString).appendingPathComponent((source as NSString).lastPathComponent)
+        }
 
         var job = CopyJob(
             id: UUID(),
-            name: CopyJob.defaultName(source: source, dest: destPath),
+            name: CopyJob.defaultName(source: source, dest: destPath(destParents[0])),
             sourceVolume: .forPath(source),
-            destVolume: .forPath(destParent),
+            destVolume: .forPath(destParents[0]),
             sourcePath: source,
-            destPath: destPath
+            destPath: destPath(destParents[0])
         )
+        job.extraDestinations = destParents.dropFirst().map {
+            JobDestination(volume: .forPath($0), path: destPath($0))
+        }
         job.verifyAfterCopy = verify
 
         print("Scanning \(source)…")
