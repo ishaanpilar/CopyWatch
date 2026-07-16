@@ -68,7 +68,10 @@ struct JobDetailView: View {
                 Button {
                     appState.start(job.id)
                 } label: {
-                    Label(job.status == .ready ? "Start" : "Resume", systemImage: "play.fill")
+                    // A recheck that found problems turns Resume into Repair.
+                    Label(job.status == .ready ? "Start"
+                          : (job.statusMessage?.contains("Repair") == true ? "Repair" : "Resume"),
+                          systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
             case .paused:
@@ -172,6 +175,10 @@ struct JobDetailView: View {
         job.doneFiles == job.totalFiles && job.doneBytes == job.totalBytes && job.totalFiles > 0
     }
 
+    private var canRecheck: Bool {
+        !job.files.isEmpty && (!job.status.isActive || job.status == .interrupted)
+    }
+
     private var destSubtitle: String {
         var parts: [String] = []
         if job.verifiedFiles > 0 { parts.append("\(job.verifiedFiles) verified") }
@@ -183,9 +190,25 @@ struct JobDetailView: View {
         let remainingFiles = job.totalFiles - job.doneFiles
         let remainingBytes = job.totalBytes - job.doneBytes
         VStack(alignment: .leading, spacing: 4) {
-            Text(deltaZero ? "Match" : "Remaining")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(deltaZero ? "Match" : "Remaining")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if canRecheck {
+                    if appState.recheckRunning.contains(job.id) {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Button {
+                            appState.recheck(job.id)
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Re-verify against the drives right now — detects files deleted or changed since the copy, and lets you repair them")
+                    }
+                }
+            }
             if deltaZero {
                 Label("Everything is good", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)

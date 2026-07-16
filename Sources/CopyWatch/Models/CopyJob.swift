@@ -87,6 +87,31 @@ struct CopyJob: Codable, Identifiable, Hashable {
         return Double(totalBytes - doneBytes) / bytesPerSecond
     }
 
+    /// Rebuild the running counters from the manifest (used by the engines and
+    /// after a re-verification pass, so drift never accumulates).
+    mutating func recomputeCounters() {
+        var done = 0, skipped = 0, verified = 0, failed = 0
+        var bytes: Int64 = 0
+        for f in files {
+            switch f.status {
+            case .copied, .verified, .skipped:
+                done += 1
+                bytes += f.size
+                if f.status == .skipped { skipped += 1 }
+                if f.status == .verified { verified += 1 }
+            case .failed:
+                failed += 1
+            case .pending, .copying:
+                bytes += f.bytesCopied
+            }
+        }
+        doneFiles = done
+        doneBytes = bytes
+        skippedFiles = skipped
+        verifiedFiles = verified
+        failedFiles = failed
+    }
+
     static func defaultName(source: String, dest: String) -> String {
         let s = (source as NSString).lastPathComponent
         let d = URL(fileURLWithPath: dest).deletingLastPathComponent().lastPathComponent

@@ -7,9 +7,18 @@ struct NewJobSheet: View {
     let onCreate: (String, String, Bool) -> Void
     var onPickDevice: ((String) -> Void)?
 
-    @State private var sourcePath = ""
-    @State private var destParentPath = ""
+    @State private var sourcePath: String
+    @State private var destParentPath: String
     @State private var verify = true
+
+    init(initialSource: String = "", initialDest: String = "",
+         onCreate: @escaping (String, String, Bool) -> Void,
+         onPickDevice: ((String) -> Void)? = nil) {
+        self.onCreate = onCreate
+        self.onPickDevice = onPickDevice
+        _sourcePath = State(initialValue: initialSource)
+        _destParentPath = State(initialValue: initialDest)
+    }
 
     private var destPreview: String? {
         guard !sourcePath.isEmpty, !destParentPath.isEmpty else { return nil }

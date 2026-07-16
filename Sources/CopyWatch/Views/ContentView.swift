@@ -4,6 +4,7 @@ enum SidebarSelection: Hashable {
     case job(UUID)
     case compare
     case device(String)
+    case volume(String)
     case about
 }
 
@@ -11,6 +12,8 @@ struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var selection: SidebarSelection?
     @State private var showNewJob = false
+    @State private var newJobSource = ""
+    @State private var newJobDest = ""
 
     var body: some View {
         NavigationSplitView {
@@ -30,6 +33,15 @@ struct ContentView: View {
                 DeviceView(deviceID: id) { jobID in
                     selection = .job(jobID)
                 }
+            case .volume(let path):
+                VolumeView(
+                    volumePath: path,
+                    onNewJob: { source, dest in
+                        newJobSource = source ?? ""
+                        newJobDest = dest ?? ""
+                        showNewJob = true
+                    },
+                    onSelectJob: { selection = .job($0) })
             case .about:
                 AboutView()
             case nil:
@@ -39,6 +51,8 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    newJobSource = ""
+                    newJobDest = ""
                     showNewJob = true
                 } label: {
                     Label("New Copy Job", systemImage: "plus")
@@ -48,6 +62,8 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showNewJob) {
             NewJobSheet(
+                initialSource: newJobSource,
+                initialDest: newJobDest,
                 onCreate: { source, destParent, verify in
                     appState.createJob(sourcePath: source, destParentPath: destParent, verify: verify)
                     if let first = appState.jobs.first {

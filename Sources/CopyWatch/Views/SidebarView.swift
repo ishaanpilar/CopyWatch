@@ -18,8 +18,6 @@ struct SidebarView: View {
             Section("Tools") {
                 Label("Compare Folders", systemImage: "arrow.left.arrow.right.square")
                     .tag(SidebarSelection.compare)
-                Label("About CopyWatch", systemImage: "info.circle")
-                    .tag(SidebarSelection.about)
             }
 
             Section("Devices") {
@@ -72,7 +70,7 @@ struct SidebarView: View {
                                   : "In use by a running job")
                         }
                     }
-                    .selectionDisabled()
+                    .tag(SidebarSelection.volume(volume.path))
                 }
                 if appState.volumes.isEmpty {
                     Text("No drives")
@@ -82,6 +80,20 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            // Discrete About entry pinned to the very bottom of the sidebar.
+            Button {
+                selection = .about
+            } label: {
+                Label("About CopyWatch", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
         .alert("Could not eject", isPresented: .init(
             get: { ejectError != nil },
             set: { if !$0 { ejectError = nil } }

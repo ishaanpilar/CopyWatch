@@ -265,6 +265,83 @@ final class AppState {
         }
     }
 
+    // MARK: Re-verify a finished job against the drives as they are NOW
+
+    var recheckRunning: Set<UUID> = []
+
+    /// Re-check every manifest file against the destination's current state.
+    /// Files that vanished or changed since the copy are flagged and reset to
+    /// pending, and the job becomes resumable — Resume then re-copies exactly
+    /// those files (the repair). Files also gone from the source are marked
+    /// failed, since there is nothing left to restore from.
+    func recheck(_ jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              !job.status.isActive || job.status == .interrupted,
+              !recheckRunning.contains(jobID) else { return }
+        guard let dst = job.destVolume.resolve(job.destPath) else {
+            mutateJob(jobID) {
+                $0.statusMessage = "Cannot verify: destination drive “\($0.destVolume.name)” is not connected."
+            }
+            return
+        }
+        recheckRunning.insert(jobID)
+        let sourceRoot = job.isDeviceJob ? nil : job.sourceVolume.resolve(job.sourcePath)
+        Task.detached(priority: .userInitiated) { [weak self, job] in
+            var job = job
+            let destRoot = URL(fileURLWithPath: dst)
+            let fm = FileManager.default
+            var missing = 0, changed = 0, unrestorable = 0
+
+            for i in job.files.indices where job.files[i].isDone {
+                let state = Reconciler.classify(job.files[i], destRoot: destRoot)
+                guard state != .match else { continue }
+                if state == .missing { missing += 1 } else { changed += 1 }
+                let sourceGone = sourceRoot.map {
+                    !fm.fileExists(atPath: ($0 as NSString)
+                        .appendingPathComponent(job.files[i].relativePath))
+                } ?? false
+                if sourceGone {
+                    job.files[i].status = .failed
+                    job.files[i].error = "Missing at destination, and the source original is gone — nothing to restore from."
+                    unrestorable += 1
+                } else {
+                    job.files[i].status = .pending
+                    job.files[i].error = nil
+                    job.files[i].checksum = nil
+                }
+                job.files[i].bytesCopied = 0
+            }
+            job.recomputeCounters()
+
+            let problems = missing + changed
+            if problems == 0 {
+                if job.status == .interrupted && job.pendingFiles == 0 && job.failedFiles == 0 {
+                    job.status = .completed
+                }
+                job.statusMessage = "Re-verified \(Date().formatted(date: .omitted, time: .shortened)) — destination matches the manifest."
+            } else if problems == unrestorable {
+                job.status = .completedWithErrors
+                job.statusMessage = "\(problems) file(s) missing at the destination and gone from the source — cannot restore."
+            } else {
+                job.status = .interrupted
+                let restorable = problems - unrestorable
+                job.statusMessage = "\(missing) missing, \(changed) changed at the destination. "
+                    + "Press Repair to re-copy \(restorable) file(s)"
+                    + (unrestorable > 0 ? " (\(unrestorable) also gone from the source)." : ".")
+            }
+
+            let finalJob = job
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.recheckRunning.remove(jobID)
+                if let idx = self.jobs.firstIndex(where: { $0.id == jobID }) {
+                    self.jobs[idx] = finalJob
+                    self.store.save(finalJob, force: true)
+                }
+            }
+        }
+    }
+
     // MARK: Source cleanup (move copied originals to Trash)
 
     var cleanupRunning: Set<UUID> = []
