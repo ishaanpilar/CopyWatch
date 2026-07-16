@@ -205,18 +205,12 @@ final class JobEngine: @unchecked Sendable {
         try destHandle.truncate(atOffset: UInt64(offset))
         try destHandle.seek(toOffset: UInt64(offset))
 
-        while true {
-            try Task.checkCancellation()
-            guard let chunk = try srcHandle.read(upToCount: Self.chunkSize), !chunk.isEmpty else {
-                break
-            }
-            hasher.update(data: chunk)
-            try destHandle.write(contentsOf: chunk)
-            offset += Int64(chunk.count)
-            setBytesCopied(index, offset)
-            recordSpeed(delta: Int64(chunk.count))
-            emit()
-        }
+        // Pipelined: a reader thread reads+hashes while this thread writes, so
+        // read and write overlap (a big win when source and destination are on
+        // different drives — the camera-card-to-backup case).
+        let sourceHash = try streamTail(
+            source: srcHandle, seededHasher: hasher,
+            writeHandles: [destHandle], fileIndex: index, startOffset: offset)
         try destHandle.close()
 
         // Preserve the source's modification time, then reveal the finished file.
@@ -225,7 +219,7 @@ final class JobEngine: @unchecked Sendable {
         if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
         try fm.moveItem(at: partURL, to: destURL)
 
-        job.files[index].checksum = FileHasher.hex(hasher.finalize())
+        job.files[index].checksum = sourceHash
         job.files[index].status = .copied
         job.doneFiles += 1
 
@@ -337,19 +331,11 @@ final class JobEngine: @unchecked Sendable {
         }
 
         try srcHandle.seek(toOffset: UInt64(offset))
-        while true {
-            try Task.checkCancellation()
-            guard let chunk = try srcHandle.read(upToCount: Self.chunkSize), !chunk.isEmpty else { break }
-            hasher.update(data: chunk)
-            for h in handles { try h.write(contentsOf: chunk) }
-            offset += Int64(chunk.count)
-            setBytesCopied(index, offset)
-            recordSpeed(delta: Int64(chunk.count))
-            emit()
-        }
+        // Pipelined read/hash → fan-out write to every destination.
+        let sourceHash = try streamTail(
+            source: srcHandle, seededHasher: hasher,
+            writeHandles: handles, fileIndex: index, startOffset: offset)
         for h in handles { try h.close() }
-
-        let sourceHash = FileHasher.hex(hasher.finalize())
         job.files[index].checksum = sourceHash
 
         for (k, root) in needed.enumerated() {
@@ -405,6 +391,64 @@ final class JobEngine: @unchecked Sendable {
     private func destName(for root: URL) -> String {
         if let d = job.allDestinations.first(where: { $0.path == root.path }) { return d.volume.name }
         return (root.path as NSString).lastPathComponent
+    }
+
+    /// Pipelined tail copy: a reader thread reads from `source` and hashes,
+    /// while this (writer) thread writes each chunk to every `writeHandles`.
+    /// Read and write overlap through a small bounded buffer. Returns the final
+    /// SHA-256 of the whole file (the passed hasher is pre-seeded with any
+    /// already-verified prefix). Progress and speed are updated on this thread,
+    /// so job state stays single-threaded.
+    private func streamTail(
+        source: FileHandle, seededHasher: SHA256,
+        writeHandles: [FileHandle], fileIndex: Int, startOffset: Int64
+    ) throws -> String {
+        let pipe = ChunkPipe(capacity: 4)
+        let done = DispatchSemaphore(value: 0)
+        final class Result: @unchecked Sendable { var hash = ""; var error: Error? }
+        let result = Result()
+
+        let reader = Thread {
+            var hasher = seededHasher
+            do {
+                while true {
+                    guard let chunk = try source.read(upToCount: Self.chunkSize),
+                          !chunk.isEmpty else { break }
+                    hasher.update(data: chunk)
+                    if !pipe.push(chunk) { break }   // writer aborted
+                }
+                result.hash = FileHasher.hex(hasher.finalize())
+            } catch {
+                result.error = error
+            }
+            pipe.finish()
+            done.signal()
+        }
+        reader.stackSize = 1 << 20
+        reader.start()
+
+        var offset = startOffset
+        var writeError: Error?
+        setBytesCopied(fileIndex, offset)
+        loop: while true {
+            do { try Task.checkCancellation() } catch { writeError = error; break loop }
+            guard let chunk = pipe.pop() else { break }   // drained + reader finished
+            do {
+                for h in writeHandles { try h.write(contentsOf: chunk) }
+            } catch {
+                writeError = error
+                break loop
+            }
+            offset += Int64(chunk.count)
+            setBytesCopied(fileIndex, offset)
+            recordSpeed(delta: Int64(chunk.count))
+            emit()
+        }
+        if writeError != nil { pipe.abort() }
+        done.wait()   // reader has released the source handle
+        if let e = writeError { throw e }
+        if let e = result.error { throw e }
+        return result.hash
     }
 
     /// Byte-compare an existing partial against the source while feeding the
@@ -515,4 +559,39 @@ final class JobEngine: @unchecked Sendable {
         if !fm.fileExists(atPath: srcRoot.path) { return true }
         return destRoots.contains { !fm.fileExists(atPath: $0.path) }
     }
+}
+
+/// A tiny bounded blocking queue between the reader thread and the writer,
+/// giving read/write overlap with a fixed memory ceiling (capacity × chunk).
+private final class ChunkPipe: @unchecked Sendable {
+    private let capacity: Int
+    private var buffer: [Data] = []
+    private var closed = false
+    private var aborted = false
+    private let cond = NSCondition()
+
+    init(capacity: Int) { self.capacity = capacity }
+
+    /// Producer: blocks while full. Returns false if the consumer aborted.
+    func push(_ data: Data) -> Bool {
+        cond.lock(); defer { cond.unlock() }
+        while buffer.count >= capacity && !aborted { cond.wait() }
+        if aborted { return false }
+        buffer.append(data)
+        cond.signal()
+        return true
+    }
+
+    /// Consumer: blocks until a chunk is available; nil once drained and closed.
+    func pop() -> Data? {
+        cond.lock(); defer { cond.unlock() }
+        while buffer.isEmpty && !closed && !aborted { cond.wait() }
+        if buffer.isEmpty { return nil }
+        let d = buffer.removeFirst()
+        cond.signal()
+        return d
+    }
+
+    func finish() { cond.lock(); closed = true; cond.broadcast(); cond.unlock() }
+    func abort() { cond.lock(); aborted = true; cond.broadcast(); cond.unlock() }
 }
