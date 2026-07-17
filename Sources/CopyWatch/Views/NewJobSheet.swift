@@ -10,7 +10,7 @@ struct NewJobSheet: View {
 
     @State private var sourcePaths: [String]
     @State private var destParentPaths: [String]
-    @State private var verify = true
+    @State private var verify = false
     @State private var saveAsPreset = false
 
     init(initialSources: [String] = [], initialDests: [String] = [],
@@ -95,8 +95,15 @@ struct NewJobSheet: View {
                 }
             }
 
-            Toggle("Verify after copy", isOn: $verify)
-                .help("Reads every copied file back and confirms its checksum matches the source")
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Verify every file after copying", isOn: $verify)
+                Text(verify
+                     ? "On: after copying, each file is read back from the destination and its checksum is confirmed against the source — catching silent corruption from a bad cable or drive. Takes roughly twice as long."
+                     : "Off by default. CopyWatch still copies every file and confirms the file count and sizes match. Turn this on to also checksum-verify each copy — worth it for irreplaceable footage or a drive you don't fully trust. It roughly doubles the time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if !destParentPaths.isEmpty {
                 Toggle(destParentPaths.count > 1

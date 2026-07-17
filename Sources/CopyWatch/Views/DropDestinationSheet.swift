@@ -8,6 +8,7 @@ struct DropDestinationSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppState.self) private var appState
     let sources: [String]
+    @State private var verify = false
 
     private var summary: String {
         sources.count == 1
@@ -36,7 +37,7 @@ struct DropDestinationSheet: View {
                 VStack(spacing: 6) {
                     ForEach(appState.destinationPresets) { preset in
                         Button {
-                            appState.startCopy(sources, toFolders: preset.allPaths, label: preset.name)
+                            appState.startCopy(sources, toFolders: preset.allPaths, label: preset.name, verify: verify)
                             dismiss()
                         } label: {
                             HStack(spacing: 10) {
@@ -88,6 +89,16 @@ struct DropDestinationSheet: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Verify every file after copying", isOn: $verify)
+                Text(verify
+                     ? "After copying, each file is read back and checksum-matched to the source — catches silent corruption. Takes roughly twice as long."
+                     : "Fast copy: file count and sizes are confirmed. Turn on to also checksum-verify each file — worth it for irreplaceable footage or a drive you don't fully trust.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Button {
                     browseAndCopy()
@@ -111,7 +122,7 @@ struct DropDestinationSheet: View {
         panel.prompt = "Copy Here"
         panel.message = "Choose or create a folder to copy the dropped items into."
         if panel.runModal() == .OK, let url = panel.url {
-            appState.startCopy(sources, toFolders: [url.path])
+            appState.startCopy(sources, toFolders: [url.path], verify: verify)
             dismiss()
         }
     }

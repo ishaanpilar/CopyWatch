@@ -1044,9 +1044,11 @@ final class AppState {
 
     /// Begin a copy of `paths` into one or more folders — used by the drop
     /// prompt for a chosen preset (possibly multi-destination) or a browsed folder.
-    func startCopy(_ paths: [String], toFolders folders: [String], label: String? = nil) {
+    func startCopy(_ paths: [String], toFolders folders: [String], label: String? = nil, verify: Bool = false) {
         guard !folders.isEmpty else { return }
-        createJob(sourcePaths: paths, destParentPaths: folders, verify: true)
+        // Verify defaults off (matches the New Job sheet) — a fast copy with
+        // count/size confirmation; the drop sheet lets the user opt in per copy.
+        createJob(sourcePaths: paths, destParentPaths: folders, verify: verify)
         let dest = label ?? (folders.count > 1
             ? "\(folders.count) drives"
             : (folders[0] as NSString).lastPathComponent)
