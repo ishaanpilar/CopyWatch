@@ -52,7 +52,7 @@ struct DeviceView: View {
             ContentUnavailableView(
                 "Device disconnected",
                 systemImage: "iphone.slash",
-                description: Text("Reconnect the device to browse and back up its media. Interrupted backups stay in the sidebar and resume when it returns."))
+                description: Text("Reconnect to browse and back up its media."))
         }
     }
 
@@ -73,7 +73,7 @@ struct DeviceView: View {
                 }
             }
             if device.isLocked {
-                Label("The device is locked. Unlock it and tap “Trust” so its media can be read.",
+                Label("Unlock the device and tap “Trust” to read its media.",
                       systemImage: "lock.fill")
                     .font(.callout)
                     .padding(8)
@@ -119,7 +119,7 @@ struct DeviceView: View {
             case .idle, .loading:
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Reading the device's media catalog…\nIf nothing happens, unlock the device and tap “Trust”.")
+                    Text("Reading media… If stuck, unlock the device and tap “Trust”.")
                         .multilineTextAlignment(.center)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -142,7 +142,7 @@ struct DeviceView: View {
     private var folderList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("\(catalog.totalFiles) files · \(Format.bytes(catalog.totalBytes)) on the device — tap to select what to back up:")
+                Text("\(catalog.totalFiles) files · \(Format.bytes(catalog.totalBytes))")
                     .font(.callout)
                 Spacer()
                 Button("Select All") { selectAll() }
@@ -442,7 +442,7 @@ struct MediaPreviewSheet: View {
             Text("\((file.relativePath as NSString).deletingLastPathComponent)  ·  \(Format.bytes(file.size))  ·  \(file.modificationDate.formatted(date: .abbreviated, time: .shortened))")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Text("Preview quality is the device's thumbnail — the full-quality file is transferred during backup.")
+            Text("Thumbnail preview — full quality transfers during backup.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
 

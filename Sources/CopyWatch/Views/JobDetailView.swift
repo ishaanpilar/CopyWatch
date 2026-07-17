@@ -48,7 +48,7 @@ struct JobDetailView: View {
 
             if let candidates = appState.trashCandidates[job.id], !candidates.isEmpty {
                 actionBanner(
-                    "\(candidates.count) file(s) deleted from the destination were found in the Trash.",
+                    "\(candidates.count) destination file(s) found in the Trash.",
                     icon: "trash.circle",
                     button: "Restore from Trash",
                     running: appState.restoreRunning.contains(job.id)) {
@@ -58,7 +58,7 @@ struct JobDetailView: View {
 
             if let missing = appState.sourceMissingPaths[job.id], !missing.isEmpty {
                 actionBanner(
-                    "\(missing.count) source file(s) are no longer on “\(job.sourceVolume.name)”. The destination copy is intact — restore them to the source drive.",
+                    "\(missing.count) file(s) missing from “\(job.sourceVolume.name)” — the copy is intact.",
                     icon: "externaldrive.badge.exclamationmark",
                     button: "Restore to Source",
                     running: appState.restoreRunning.contains(job.id)) {
@@ -223,6 +223,7 @@ struct JobDetailView: View {
                 if job.status == .completed || job.status == .completedWithErrors {
                     Button("View Integrity Certificate") { appState.openCertificate(for: job) }
                     Button("Export Certificate…") { exportCertificate() }
+                    Button("Export Media Hash List (MHL)…") { exportMHL() }
                 }
                 Button("Export Manifest as CSV") { exportCSV() }
                 if !job.status.isActive {
@@ -258,6 +259,18 @@ struct JobDetailView: View {
         panel.nameFieldStringValue = job.name.replacingOccurrences(of: "/", with: "-") + " — certificate.html"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         appState.exportCertificate(for: job, to: url)
+    }
+
+    private func exportMHL() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = MHL.suggestedFileName(for: job)
+        panel.message = "Save a Media Hash List other offload tools can verify against."
+        // Default to the destination folder — where an MHL conventionally lives.
+        if let dst = job.destVolume.resolve(job.destPath) {
+            panel.directoryURL = URL(fileURLWithPath: dst)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        appState.exportMHL(for: job, to: url)
     }
 
     // MARK: Comparison dashboard
@@ -376,12 +389,12 @@ struct JobDetailView: View {
                     Button {
                         appState.recheck(job.id)
                     } label: {
-                        Label("Recheck Now", systemImage: "arrow.clockwise")
+                        Label("Recheck Now", systemImage: "checkmark.arrow.triangle.2.circlepath")
                             .font(.callout)
                     }
                     .buttonStyle(.bordered)
                     .padding(.top, 2)
-                    .help("Re-verify against the drives right now — detects files deleted or changed since the copy, and lets you repair or restore them")
+                    .help("Re-verify against the drives and repair anything changed")
                 }
             }
         }
@@ -421,7 +434,7 @@ struct JobDetailView: View {
                 .labelsHidden()
                 Spacer()
                 if filteredCount > Self.tableRowCap {
-                    Text("Showing first \(Self.tableRowCap) of \(filteredCount) — narrow with the filter, or export the CSV for everything.")
+                    Text("First \(Self.tableRowCap) of \(filteredCount) — export CSV for all")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -489,9 +502,9 @@ struct SourceCleanupSheet: View {
                     .font(.title3.bold())
 
                 VStack(alignment: .leading, spacing: 8) {
-                    bullet("checkmark.shield", "Every file is re-checked first — its copy must still exist at the destination with the exact recorded size. Anything unverifiable is left untouched.")
-                    bullet("trash", "The \(job.doneFiles) copied originals move to the **Trash** on that drive. Nothing is permanently deleted — recover them from the Trash anytime.")
-                    bullet("lock", "To prevent accidents, the button unlocks only when you type the file count below.")
+                    bullet("checkmark.shield", "Every copy is re-checked at the destination first.")
+                    bullet("trash", "The \(job.doneFiles) originals move to the **Trash** — recoverable anytime.")
+                    bullet("lock", "Type the file count below to unlock.")
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -538,7 +551,7 @@ struct SourceCleanupSheet: View {
                 }
             }
         } else if !fullyVerified {
-            Label("Available only for fully verified copies with zero failed files. Re-run the job with “Verify after copy” enabled.",
+            Label("Requires a fully verified copy with no failures.",
                   systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
                 .font(.callout)

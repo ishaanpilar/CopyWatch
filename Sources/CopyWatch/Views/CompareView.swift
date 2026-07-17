@@ -26,7 +26,7 @@ struct CompareView: View {
     private var form: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Compare two folders").font(.title3.bold())
-            Text("Checks the things you'd check by hand — file counts, total size — and exactly which files are missing, different, or extra.")
+            Text("Find exactly which files are missing, different, or extra.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -36,7 +36,7 @@ struct CompareView: View {
             Toggle(isOn: $deep) {
                 VStack(alignment: .leading) {
                     Text("Deep compare (checksums)")
-                    Text("Hashes every file on both sides. Slower, but catches corruption that size and dates can't.")
+                    Text("Hashes every file. Slower, but catches corruption.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -173,7 +173,7 @@ struct ComparisonCard: View {
             Button("Start Repair Copy") { repair() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Copies the \(record.missing.count) missing and \(record.differing.count) different file(s) from A into B, skipping everything already identical. Files that exist only in B are left untouched — nothing is deleted.")
+            Text("Copies \(record.missing.count) missing and \(record.differing.count) different file(s) from A into B. Nothing is deleted.")
         }
     }
 
@@ -201,7 +201,7 @@ struct ComparisonCard: View {
                 Text(path).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             if items.count > 200 {
-                Text("… and \(items.count - 200) more — export CSV for the full list.")
+                Text("… and \(items.count - 200) more — export CSV for all.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

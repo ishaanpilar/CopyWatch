@@ -25,7 +25,19 @@
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key>
-    <string>CopyWatch</string>
+    <string>© 2026 Ishaan Pilar</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>CopyWatch copies and verifies files to and from external drives and memory cards.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>CopyWatch needs access to copy files you drop from your Desktop.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>CopyWatch needs access to copy files you drop from your Documents folder.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>CopyWatch needs access to copy files you drop from your Downloads folder.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>CopyWatch copies and verifies files to and from network volumes.</string>
     <key>NSServices</key>
     <array>
         <dict>

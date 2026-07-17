@@ -14,10 +14,9 @@ struct DestinationsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Destinations").font(.title2.bold())
-                    Text("Save the folders you back up to. A destination can hold several folders — dropping a source onto it then copies to every one in a single pass, each independently verified. Drop files onto a destination here to send them there directly.")
+                    Text("Saved copy targets — drop files on one to copy there directly.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if appState.destinationPresets.isEmpty {
@@ -156,7 +155,7 @@ private struct DestinationEditorSheet: View {
                 HStack {
                     Text("Folders").font(.callout)
                     if paths.count > 1 {
-                        Text("copies to all \(paths.count), verified separately")
+                        Text("copies to all \(paths.count)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()

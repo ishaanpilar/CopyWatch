@@ -77,7 +77,10 @@ final class AppState {
     /// (Scanner.scanSelection finds their common ancestor and preserves enough
     /// structure to avoid collisions). Pass more than one `destParentPaths` to
     /// back up the same source to several drives in one pass.
-    func createJob(sourcePaths: [String], destParentPaths: [String], verify: Bool) {
+    func createJob(
+        sourcePaths: [String], destParentPaths: [String], verify: Bool,
+        algorithm: ChecksumAlgorithm = .sha256
+    ) {
         guard !sourcePaths.isEmpty, let primaryParent = destParentPaths.first else { return }
         let isSingleFolder = sourcePaths.count == 1
             && (try? URL(fileURLWithPath: sourcePaths[0]).resourceValues(forKeys: [.isDirectoryKey]))?
@@ -102,6 +105,7 @@ final class AppState {
             destPath: primaryParent
         )
         job.verifyAfterCopy = verify
+        job.checksumAlgorithm = algorithm
         job.status = .scanning
         jobs.insert(job, at: 0)
         store.save(job, force: true)
@@ -463,6 +467,12 @@ final class AppState {
         try? FileManager.default.copyItem(at: src, to: destination)
     }
 
+    /// Write the job's Media Hash List to a chosen location, so other offload
+    /// tools (Hedge, ShotPut Pro, Silverstack, Resolve) can verify the copy.
+    func exportMHL(for job: CopyJob, to destination: URL) {
+        try? Data(MHL.render(job).utf8).write(to: destination, options: .atomic)
+    }
+
     private func apply(_ snapshot: CopyJob) {
         guard let index = jobs.firstIndex(where: { $0.id == snapshot.id }) else { return }
         let oldStatus = jobs[index].status
@@ -650,6 +660,11 @@ final class AppState {
                 if repairable > 0 { parts.append("Repair re-copies \(repairable) from the source.") }
                 if restoredFromTrash > 0 { parts.append("\(restoredFromTrash) found in the Trash — restore below.") }
                 if unrestorable > 0 { parts.append("\(unrestorable) gone from both sides — cannot recover.") }
+                // A missing file we couldn't find in the Trash may just be
+                // unsearchable: reading the Trash needs Full Disk Access.
+                if missing > 0 && restoredFromTrash == 0 && !TrashFinder.canAccessTrash {
+                    parts.append("Grant Full Disk Access in System Settings to search the Trash for deleted files.")
+                }
             }
 
             // Status: interrupted if the destination itself needs work; otherwise
@@ -1044,11 +1059,14 @@ final class AppState {
 
     /// Begin a copy of `paths` into one or more folders — used by the drop
     /// prompt for a chosen preset (possibly multi-destination) or a browsed folder.
-    func startCopy(_ paths: [String], toFolders folders: [String], label: String? = nil, verify: Bool = false) {
+    func startCopy(
+        _ paths: [String], toFolders folders: [String], label: String? = nil,
+        verify: Bool = false, algorithm: ChecksumAlgorithm = .sha256
+    ) {
         guard !folders.isEmpty else { return }
         // Verify defaults off (matches the New Job sheet) — a fast copy with
         // count/size confirmation; the drop sheet lets the user opt in per copy.
-        createJob(sourcePaths: paths, destParentPaths: folders, verify: verify)
+        createJob(sourcePaths: paths, destParentPaths: folders, verify: verify, algorithm: algorithm)
         let dest = label ?? (folders.count > 1
             ? "\(folders.count) drives"
             : (folders[0] as NSString).lastPathComponent)

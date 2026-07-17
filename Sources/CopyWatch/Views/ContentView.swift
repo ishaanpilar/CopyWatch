@@ -77,25 +77,27 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .automatic) {
                 Menu {
-                    Toggle("All together (parallel)", isOn: .init(
+                    Toggle("Run in parallel", isOn: .init(
                         get: { !appState.runJobsSerially },
                         set: { appState.runJobsSerially = !$0 }))
-                    Toggle("One at a time (queue)", isOn: .init(
+                    Toggle("Queue one at a time", isOn: .init(
                         get: { appState.runJobsSerially },
                         set: { appState.runJobsSerially = $0 }))
                 } label: {
-                    Label(appState.runJobsSerially ? "One at a time" : "All together",
+                    Label(appState.runJobsSerially ? "Queued" : "Parallel",
                           systemImage: appState.runJobsSerially ? "list.number" : "square.stack.3d.up")
                 }
-                .help("Run multiple copy jobs one after another, or all at once")
+                .help("How multiple jobs run")
             }
         }
         .sheet(isPresented: $showNewJob) {
             NewJobSheet(
                 initialSources: newJobSources,
                 initialDests: newJobDests,
-                onCreate: { sources, destParents, verify in
-                    appState.createJob(sourcePaths: sources, destParentPaths: destParents, verify: verify)
+                onCreate: { sources, destParents, verify, algorithm in
+                    appState.createJob(
+                        sourcePaths: sources, destParentPaths: destParents,
+                        verify: verify, algorithm: algorithm)
                     if let first = appState.jobs.first {
                         selection = .job(first.id)
                     }
@@ -119,7 +121,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(Color.accentColor, lineWidth: 3, antialiased: true)
                         .padding(8)
-                    Label("Drop to choose a destination", systemImage: "square.and.arrow.down.on.square")
+                    Label("Drop to copy", systemImage: "square.and.arrow.down.on.square")
                         .font(.title2.bold())
                         .padding(20)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -164,7 +166,7 @@ struct ContentView: View {
         ContentUnavailableView(
             "No job selected",
             systemImage: "externaldrive.badge.timemachine",
-            description: Text("Create a copy job with the + button, pick one from the sidebar, or drag files or a folder anywhere onto this window.")
+            description: Text("Drop files anywhere, or press + to start a copy.")
         )
     }
 }

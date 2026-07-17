@@ -16,9 +16,8 @@ struct BenchmarkView: View {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Transfer Benchmark").font(.title2.bold())
-                    Text("Writes and reads a temporary test file with the OS cache bypassed, so you see the drive's real speed — not RAM. A copy running far below these numbers points to a cable, hub, or a failing drive.")
+                    Text("Measures a drive's real read/write speed, bypassing the OS cache.")
                         .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 GroupBox {

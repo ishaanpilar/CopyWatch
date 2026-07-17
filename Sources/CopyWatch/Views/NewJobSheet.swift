@@ -4,17 +4,18 @@ import AppKit
 struct NewJobSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppState.self) private var appState
-    /// (sources, destinationParents, verify)
-    let onCreate: ([String], [String], Bool) -> Void
+    /// (sources, destinationParents, verify, checksumAlgorithm)
+    let onCreate: ([String], [String], Bool, ChecksumAlgorithm) -> Void
     var onPickDevice: ((String) -> Void)?
 
     @State private var sourcePaths: [String]
     @State private var destParentPaths: [String]
     @State private var verify = false
+    @State private var algorithm: ChecksumAlgorithm = .sha256
     @State private var saveAsPreset = false
 
     init(initialSources: [String] = [], initialDests: [String] = [],
-         onCreate: @escaping ([String], [String], Bool) -> Void,
+         onCreate: @escaping ([String], [String], Bool, ChecksumAlgorithm) -> Void,
          onPickDevice: ((String) -> Void)? = nil) {
         self.onCreate = onCreate
         self.onPickDevice = onPickDevice
@@ -51,7 +52,7 @@ struct NewJobSheet: View {
                 HStack {
                     Text("Copy to").font(.callout)
                     if destParentPaths.count > 1 {
-                        Text("\(destParentPaths.count) drives — verified backup to each")
+                        Text("copies to all \(destParentPaths.count)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -95,20 +96,29 @@ struct NewJobSheet: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Verify every file after copying", isOn: $verify)
-                Text(verify
-                     ? "On: after copying, each file is read back from the destination and its checksum is confirmed against the source — catching silent corruption from a bad cable or drive. Takes roughly twice as long."
-                     : "Off by default. CopyWatch still copies every file and confirms the file count and sizes match. Turn this on to also checksum-verify each copy — worth it for irreplaceable footage or a drive you don't fully trust. It roughly doubles the time.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Verify every file after copying", isOn: $verify)
+                    Text("Checksums each copy against the source. About 2× slower.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 8) {
+                    Picker("Checksum", selection: $algorithm) {
+                        ForEach(ChecksumAlgorithm.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    .help(algorithm.blurb)
+                    Text(algorithm.blurb)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             if !destParentPaths.isEmpty {
-                Toggle(destParentPaths.count > 1
-                       ? "Save these \(destParentPaths.count) folders as a destination preset"
-                       : "Save this as a destination preset", isOn: $saveAsPreset)
+                Toggle("Save as destination preset", isOn: $saveAsPreset)
                     .help("Reuse it later from the drop prompt and the Destinations tab")
             }
 
@@ -132,7 +142,7 @@ struct NewJobSheet: View {
                             : (destParentPaths[0] as NSString).lastPathComponent
                         appState.addDestinationPreset(name: name, paths: destParentPaths)
                     }
-                    onCreate(sourcePaths, destParentPaths, verify)
+                    onCreate(sourcePaths, destParentPaths, verify, algorithm)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)

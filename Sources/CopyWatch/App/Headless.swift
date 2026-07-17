@@ -9,12 +9,15 @@ enum Headless {
         switch args.first {
         case "copy" where args.count >= 3:
             let parents = args[2...].filter { !$0.hasPrefix("--") }
-            runCopy(source: args[1], destParents: Array(parents), verify: !args.contains("--no-verify"))
+            runCopy(
+                source: args[1], destParents: Array(parents),
+                verify: !args.contains("--no-verify"),
+                algorithm: args.contains("--xxhash") ? .xxh64 : .sha256)
         case "compare" where args.count >= 3:
             runCompare(a: args[1], b: args[2], deep: args.contains("--deep"))
         default:
             FileHandle.standardError.write(Data("""
-            usage: CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify]
+            usage: CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify] [--xxhash]
                    CopyWatch --headless compare <a> <b> [--deep]
             \n
             """.utf8))
@@ -22,7 +25,10 @@ enum Headless {
         }
     }
 
-    private static func runCopy(source: String, destParents: [String], verify: Bool) -> Never {
+    private static func runCopy(
+        source: String, destParents: [String], verify: Bool,
+        algorithm: ChecksumAlgorithm = .sha256
+    ) -> Never {
         let store = JobStore()
         func destPath(_ parent: String) -> String {
             (parent as NSString).appendingPathComponent((source as NSString).lastPathComponent)
@@ -40,6 +46,7 @@ enum Headless {
             JobDestination(volume: .forPath($0), path: destPath($0))
         }
         job.verifyAfterCopy = verify
+        job.checksumAlgorithm = algorithm
 
         print("Scanning \(source)…")
         do {
@@ -76,7 +83,11 @@ enum Headless {
         var certLine = ""
         if final.status == .completed || final.status == .completedWithErrors {
             let url = Certificate.generate(for: final)
-            certLine = "\n  certificate: \(url.path)\n  cert ID:     \(Certificate.certificateID(for: final))"
+            // Also drop an MHL at the destination root, the pro-workflow convention.
+            let mhlURL = URL(fileURLWithPath: final.destPath)
+                .appendingPathComponent(MHL.suggestedFileName(for: final))
+            try? Data(MHL.render(final).utf8).write(to: mhlURL, options: .atomic)
+            certLine = "\n  certificate: \(url.path)\n  cert ID:     \(Certificate.certificateID(for: final))\n  mhl:         \(mhlURL.path)"
         }
         print("""
 

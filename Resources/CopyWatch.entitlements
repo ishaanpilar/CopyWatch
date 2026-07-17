@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      CopyWatch ships as a non-sandboxed Developer ID app: it needs to read and
+      write arbitrary user-chosen folders and external drives, which the App
+      Sandbox would block. The hardened runtime is enabled at sign time
+      (`codesign --options runtime`), required for notarization. No runtime
+      exceptions are needed, so this dictionary is intentionally empty.
+    -->
+</dict>
+</plist>

@@ -9,6 +9,7 @@ struct DropDestinationSheet: View {
     @Environment(AppState.self) private var appState
     let sources: [String]
     @State private var verify = false
+    @State private var algorithm: ChecksumAlgorithm = .sha256
 
     private var summary: String {
         sources.count == 1
@@ -37,7 +38,7 @@ struct DropDestinationSheet: View {
                 VStack(spacing: 6) {
                     ForEach(appState.destinationPresets) { preset in
                         Button {
-                            appState.startCopy(sources, toFolders: preset.allPaths, label: preset.name, verify: verify)
+                            appState.startCopy(sources, toFolders: preset.allPaths, label: preset.name, verify: verify, algorithm: algorithm)
                             dismiss()
                         } label: {
                             HStack(spacing: 10) {
@@ -81,22 +82,23 @@ struct DropDestinationSheet: View {
                     }
                 }
             } else {
-                Text("You haven't saved any destinations yet. Choose a folder below — you can save destinations from the Destinations tab.")
+                Text("No saved destinations yet — choose a folder below.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Verify every file after copying", isOn: $verify)
-                Text(verify
-                     ? "After copying, each file is read back and checksum-matched to the source — catches silent corruption. Takes roughly twice as long."
-                     : "Fast copy: file count and sizes are confirmed. Turn on to also checksum-verify each file — worth it for irreplaceable footage or a drive you don't fully trust.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Toggle("Verify after copying", isOn: $verify)
+                    .help("Re-reads every copy from the drive and checksums it against the source. ~2× slower.")
+                Spacer()
+                Picker("Checksum", selection: $algorithm) {
+                    ForEach(ChecksumAlgorithm.allCases) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .help(algorithm.blurb)
             }
 
             HStack {
@@ -122,7 +124,7 @@ struct DropDestinationSheet: View {
         panel.prompt = "Copy Here"
         panel.message = "Choose or create a folder to copy the dropped items into."
         if panel.runModal() == .OK, let url = panel.url {
-            appState.startCopy(sources, toFolders: [url.path], verify: verify)
+            appState.startCopy(sources, toFolders: [url.path], verify: verify, algorithm: algorithm)
             dismiss()
         }
     }

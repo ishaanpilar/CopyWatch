@@ -1,7 +1,6 @@
 import Foundation
-import CryptoKit
 
-/// Runs one job: chunked copy with streaming SHA-256, per-file verify,
+/// Runs one job: chunked copy with a streaming checksum, per-file verify,
 /// pause/cancel, mid-file resume, and rescue of partial (Finder) copies.
 ///
 /// All mutation happens on the engine's own task; progress leaves via
@@ -196,7 +195,7 @@ final class JobEngine: @unchecked Sendable {
             }
         }
 
-        var hasher = SHA256()
+        var hasher = job.checksumAlgorithm.makeHasher()
         var offset: Int64 = 0
         setBytesCopied(index, 0)
 
@@ -209,7 +208,7 @@ final class JobEngine: @unchecked Sendable {
             offset = try verifyPrefix(
                 part: partURL, srcHandle: srcHandle, hasher: &hasher, fileIndex: index)
             if offset == 0 {
-                hasher = SHA256()
+                hasher = job.checksumAlgorithm.makeHasher()
                 try? fm.removeItem(at: partURL)
                 try srcHandle.seek(toOffset: 0)
             }
@@ -229,6 +228,9 @@ final class JobEngine: @unchecked Sendable {
         let sourceHash = try streamTail(
             source: srcHandle, seededHasher: hasher,
             writeHandles: [destHandle], fileIndex: index, startOffset: offset)
+        // Flush to the device before verifying, so the read-back can't be served
+        // from the write cache (a masked corruption). Only needed when verifying.
+        if job.verifyAfterCopy { _ = fcntl(destHandle.fileDescriptor, F_FULLFSYNC, 0) }
         try destHandle.close()
 
         // Preserve the source's modification time, then reveal the finished file.
@@ -236,6 +238,8 @@ final class JobEngine: @unchecked Sendable {
             [.modificationDate: record.modificationDate], ofItemAtPath: partURL.path)
         if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
         try fm.moveItem(at: partURL, to: destURL)
+        // Carry over permissions, Finder tags/xattrs, ACLs, and creation date.
+        Self.copyMetadata(from: srcURL, to: destURL)
 
         job.files[index].checksum = sourceHash
         job.files[index].status = .copied
@@ -245,7 +249,8 @@ final class JobEngine: @unchecked Sendable {
             job.currentFile = "Verifying: \(record.relativePath)"
             emit(force: true)
             let vT = DispatchTime.now().uptimeNanoseconds
-            let destHash = try FileHasher.sha256(of: destURL)
+            let destHash = try FileHasher.hash(
+                of: destURL, algorithm: job.checksumAlgorithm, bypassCache: true)
             if TransferLog.shared.active {
                 let sec = Double(DispatchTime.now().uptimeNanoseconds &- vT) / 1e9
                 TransferLog.shared.log("verify", [
@@ -324,7 +329,7 @@ final class JobEngine: @unchecked Sendable {
             for p in partURLs where fm.fileExists(atPath: p.path) { try fm.removeItem(at: p) }
         }
 
-        var hasher = SHA256()
+        var hasher = job.checksumAlgorithm.makeHasher()
         let srcHandle = try FileHandle(forReadingFrom: srcURL)
         defer { try? srcHandle.close() }
 
@@ -349,7 +354,7 @@ final class JobEngine: @unchecked Sendable {
                 let n: Int = try autoreleasepool {
                     let want = Int(min(Int64(Self.chunkSize), remaining))
                     guard let chunk = try srcHandle.read(upToCount: want), !chunk.isEmpty else { return 0 }
-                    hasher.update(data: chunk)
+                    hasher.update(chunk)
                     return chunk.count
                 }
                 if n == 0 { break }
@@ -364,6 +369,7 @@ final class JobEngine: @unchecked Sendable {
         let sourceHash = try streamTail(
             source: srcHandle, seededHasher: hasher,
             writeHandles: handles, fileIndex: index, startOffset: offset)
+        if job.verifyAfterCopy { for h in handles { _ = fcntl(h.fileDescriptor, F_FULLFSYNC, 0) } }
         for h in handles { try h.close() }
         job.files[index].checksum = sourceHash
 
@@ -374,11 +380,13 @@ final class JobEngine: @unchecked Sendable {
                 [.modificationDate: record.modificationDate], ofItemAtPath: partURL.path)
             if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
             try fm.moveItem(at: partURL, to: destURL)
+            Self.copyMetadata(from: srcURL, to: destURL)
 
             if job.verifyAfterCopy {
                 job.currentFile = "Verifying: \(record.relativePath)"
                 emit(force: true)
-                let destHash = try FileHasher.sha256(of: destURL)
+                let destHash = try FileHasher.hash(
+                    of: destURL, algorithm: job.checksumAlgorithm, bypassCache: true)
                 if destHash != sourceHash {
                     job.files[index].applyFailure(Self.verificationFailure(at: destName(for: root)))
                     setBytesCopied(index, 0)
@@ -435,7 +443,7 @@ final class JobEngine: @unchecked Sendable {
     /// already-verified prefix). Progress and speed are updated on this thread,
     /// so job state stays single-threaded.
     private func streamTail(
-        source: FileHandle, seededHasher: SHA256,
+        source: FileHandle, seededHasher: any StreamingHasher,
         writeHandles: [FileHandle], fileIndex: Int, startOffset: Int64
     ) throws -> String {
         let pipe = ChunkPipe(capacity: 4)
@@ -453,12 +461,12 @@ final class JobEngine: @unchecked Sendable {
                     let more = try autoreleasepool { () -> Bool in
                         guard let chunk = try source.read(upToCount: Self.chunkSize),
                               !chunk.isEmpty else { return false }
-                        hasher.update(data: chunk)
+                        hasher.update(chunk)
                         return pipe.push(chunk)   // false = EOF handled below or writer aborted
                     }
                     if !more { break }
                 }
-                result.hash = FileHasher.hex(hasher.finalize())
+                result.hash = hasher.finalizedHex()
             } catch {
                 result.error = error
             }
@@ -466,11 +474,20 @@ final class JobEngine: @unchecked Sendable {
             done.signal()
         }
         reader.stackSize = 1 << 20
+        reader.qualityOfService = .userInitiated   // match the copy task; avoid App Nap throttling
         reader.start()
 
         var offset = startOffset
         var writeError: Error?
         setBytesCopied(fileIndex, offset)
+
+        // With more than one destination, fan the per-chunk writes out across a
+        // concurrent queue so a chunk costs the SLOWEST drive's write time, not
+        // the sum — two backup drives finish in roughly the time of one. Single
+        // destination keeps the plain inline write (zero overhead).
+        let fanoutQueue = writeHandles.count > 1
+            ? DispatchQueue(label: "copywatch.fanout", attributes: .concurrent)
+            : nil
 
         // Diagnostics: measure real (unsmoothed) throughput and where the loop
         // spends its time — waiting on pop() (read-bound), inside write()
@@ -488,7 +505,21 @@ final class JobEngine: @unchecked Sendable {
             if diag { popNs &+= DispatchTime.now().uptimeNanoseconds &- popT }
             do {
                 let wT = diag ? DispatchTime.now().uptimeNanoseconds : 0
-                for h in writeHandles { try h.write(contentsOf: chunk) }
+                if let fanoutQueue {
+                    // Each handle is a distinct file, so concurrent writes don't
+                    // share state; wait for all before advancing to the next chunk.
+                    let group = DispatchGroup()
+                    let errBox = ErrorBox()
+                    for h in writeHandles {
+                        fanoutQueue.async(group: group) {
+                            do { try h.write(contentsOf: chunk) } catch { errBox.set(error) }
+                        }
+                    }
+                    group.wait()
+                    if let e = errBox.error { throw e }
+                } else {
+                    try writeHandles[0].write(contentsOf: chunk)
+                }
                 if diag { writeNs &+= DispatchTime.now().uptimeNanoseconds &- wT }
             } catch {
                 writeError = error
@@ -548,10 +579,30 @@ final class JobEngine: @unchecked Sendable {
     private func round(_ x: Double) -> Double { (x * 10).rounded() / 10 }
     private func round3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }
 
+    /// Best-effort copy of a file's metadata (POSIX mode, ACLs, extended
+    /// attributes incl. Finder tags, and creation date) from source to the
+    /// finished destination. Data is already written; `COPYFILE_METADATA`
+    /// touches everything but the bytes. Failures (e.g. chown across users)
+    /// are ignored — the copy itself is already verified.
+    static func copyMetadata(from src: URL, to dest: URL) {
+        _ = src.withUnsafeFileSystemRepresentation { s in
+            dest.withUnsafeFileSystemRepresentation { d in
+                copyfile(s, d, nil, copyfile_flags_t(COPYFILE_METADATA))
+            }
+        }
+        // copyfile doesn't reliably carry the creation date (birthtime) across
+        // APFS, so set it explicitly from the source — this is what lets media
+        // stay sorted by "date taken" after an offload.
+        let fm = FileManager.default
+        if let crt = (try? fm.attributesOfItem(atPath: src.path))?[.creationDate] as? Date {
+            try? fm.setAttributes([.creationDate: crt], ofItemAtPath: dest.path)
+        }
+    }
+
     /// Byte-compare an existing partial against the source while feeding the
     /// hasher. Returns the number of verified prefix bytes (0 = unusable partial).
     private func verifyPrefix(
-        part: URL, srcHandle: FileHandle, hasher: inout SHA256, fileIndex: Int
+        part: URL, srcHandle: FileHandle, hasher: inout any StreamingHasher, fileIndex: Int
     ) throws -> Int64 {
         let partHandle = try FileHandle(forReadingFrom: part)
         defer { try? partHandle.close() }
@@ -569,7 +620,7 @@ final class JobEngine: @unchecked Sendable {
                       !partChunk.isEmpty else { return .done }
                 guard let srcChunk = try srcHandle.read(upToCount: partChunk.count),
                       srcChunk == partChunk else { return .mismatch }
-                hasher.update(data: partChunk)
+                hasher.update(partChunk)
                 return .more(Int64(partChunk.count))
             }
             switch step {
@@ -734,4 +785,12 @@ private final class ChunkPipe: @unchecked Sendable {
 
     func finish() { cond.lock(); closed = true; cond.broadcast(); cond.unlock() }
     func abort() { cond.lock(); aborted = true; cond.broadcast(); cond.unlock() }
+}
+
+/// Thread-safe holder for the first error seen across concurrent destination writes.
+private final class ErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+    func set(_ error: Error) { lock.lock(); if stored == nil { stored = error }; lock.unlock() }
+    var error: Error? { lock.lock(); defer { lock.unlock() }; return stored }
 }

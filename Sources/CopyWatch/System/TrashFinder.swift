@@ -4,6 +4,16 @@ import Foundation
 /// so a recheck can offer "restore" as an alternative to "recopy from
 /// source" — the only option left once the source has also been cleaned up.
 enum TrashFinder {
+    /// Whether macOS lets us read the user's Trash. Listing `~/.Trash` is
+    /// gated by Full Disk Access under TCC: without it the call fails, so a
+    /// `false` here means "restore from Trash" would silently find nothing and
+    /// the user should be told to grant access rather than left guessing.
+    static var canAccessTrash: Bool {
+        let trash = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash")
+        return (try? FileManager.default.contentsOfDirectory(atPath: trash.path)) != nil
+    }
+
     /// Trash locations to search: the user's own Trash, plus the Trash on the
     /// destination's volume (external drives keep a separate `.Trashes/<uid>`).
     private static func trashDirectories(near destPath: String) -> [URL] {

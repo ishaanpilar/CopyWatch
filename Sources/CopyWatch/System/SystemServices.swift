@@ -2,10 +2,16 @@ import Foundation
 import IOKit.pwr_mgt
 import UserNotifications
 
-/// Keeps the Mac awake while copies run.
+/// Keeps the Mac awake and the process at full speed while copies run.
+///
+/// Two guards: an IOPM assertion stops idle *system* sleep, and a
+/// `ProcessInfo` activity stops *App Nap* — which, when CopyWatch's window is
+/// hidden or the app is in the background during a long overnight copy, would
+/// otherwise let macOS throttle its timers and lower its I/O priority.
 final class SleepBlocker {
     private var assertionID: IOPMAssertionID = 0
     private var active = false
+    private var activity: NSObjectProtocol?
 
     func setActive(_ wanted: Bool) {
         guard wanted != active else { return }
@@ -16,8 +22,15 @@ final class SleepBlocker {
                 "CopyWatch is copying files" as CFString,
                 &assertionID)
             active = (result == kIOReturnSuccess)
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .idleSystemSleepDisabled],
+                reason: "CopyWatch is copying files")
         } else {
             IOPMAssertionRelease(assertionID)
+            if let activity {
+                ProcessInfo.processInfo.endActivity(activity)
+                self.activity = nil
+            }
             active = false
         }
     }

@@ -16,7 +16,7 @@ struct SidebarView: View {
             }
 
             Section("Tools") {
-                Label("Compare Folders", systemImage: "arrow.left.arrow.right.square")
+                Label("Compare Folders", systemImage: "arrow.left.arrow.right")
                     .tag(SidebarSelection.compare)
                 Label("Destinations", systemImage: "externaldrive.badge.plus")
                     .tag(SidebarSelection.destinations)

@@ -75,6 +75,15 @@ struct CopyJob: Codable, Identifiable, Hashable {
 
     var status: JobStatus = .scanning
     var verifyAfterCopy: Bool = true
+    /// Checksum algorithm for copy + verify. Optional for back-compat: jobs
+    /// saved before this field decode as nil, which `checksumAlgorithm` reads
+    /// as SHA-256 (what those jobs actually used). Never make this non-optional
+    /// — a missing key would make every old job file fail to decode and vanish.
+    var checksumAlgorithmRaw: ChecksumAlgorithm?
+    var checksumAlgorithm: ChecksumAlgorithm {
+        get { checksumAlgorithmRaw ?? .sha256 }
+        set { checksumAlgorithmRaw = newValue }
+    }
     var createdAt: Date = Date()
     var completedAt: Date?
     var statusMessage: String?

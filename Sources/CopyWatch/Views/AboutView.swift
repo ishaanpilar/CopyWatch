@@ -14,74 +14,120 @@ struct AboutView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 112, height: 112)
-                    .padding(.top, 24)
-
-                VStack(spacing: 4) {
-                    Text("CopyWatch")
-                        .font(.largeTitle.bold())
-                    Text("Version \(version)")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+            VStack(spacing: 24) {
+                identity
+                creatorNote
+                card {
+                    linkRow("questionmark.bubble", "Send Feedback",
+                            "Request a feature or share an idea", feedbackURL)
+                    Divider()
+                    linkRow("exclamationmark.bubble", "Report an Issue",
+                            "Something broken or unexpected",
+                            URL(string: "https://github.com/ishaanpilar/CopyWatch/issues")!)
+                    Divider()
+                    linkRow("chevron.left.forwardslash.chevron.right", "View on GitHub",
+                            "Source code and releases",
+                            URL(string: "https://github.com/ishaanpilar/CopyWatch")!)
                 }
-
-                updateRow
-
-                Divider().frame(maxWidth: 420)
-
-                VStack(spacing: 10) {
-                    Text("A note from Ishaan Pilar")
-                        .font(.headline)
-                    Text("""
-                    I built CopyWatch after watching how much guesswork goes into copying and backing up files — did everything actually transfer? What happens if the drive disconnects halfway through? Which file was I on when it crashed? I ran into these questions myself often enough that I decided to build something that answers them for good, and I wanted to share it with anyone else who deals with the same thing.
-                    """)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
-                    Text("— Ishaan Pilar")
-                        .font(.callout.italic())
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider().frame(maxWidth: 420)
-
-                Button {
-                    NSWorkspace.shared.open(feedbackURL)
-                } label: {
-                    Label("Request a Feature or Send Feedback", systemImage: "lightbulb")
-                }
-                .buttonStyle(.borderedProminent)
-
-                HStack(spacing: 20) {
-                    Link(destination: URL(string: "https://github.com/ishaanpilar/CopyWatch")!) {
-                        Label("GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
-                    Link(destination: URL(string: "https://github.com/ishaanpilar/CopyWatch/releases/latest")!) {
-                        Label("Latest Release", systemImage: "arrow.down.circle")
-                    }
-                    Link(destination: URL(string: "https://github.com/ishaanpilar/CopyWatch/issues")!) {
-                        Label("Report an Issue", systemImage: "exclamationmark.bubble")
-                    }
-                }
-                .padding(.top, 2)
-
-                Divider().frame(maxWidth: 420)
-
-                diagnosticsSection
-
+                diagnosticsCard
                 Text("© 2026 Ishaan Pilar")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-                    .padding(.top, 8)
                     .padding(.bottom, 24)
             }
+            .frame(maxWidth: 440)
             .frame(maxWidth: .infinity)
         }
         .navigationTitle("About")
+    }
+
+    // MARK: Identity
+
+    private var identity: some View {
+        VStack(spacing: 12) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
+                .padding(.top, 28)
+            VStack(spacing: 3) {
+                Text("CopyWatch")
+                    .font(.title.bold())
+                Text("Version \(version)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("Copies you can prove — by Ishaan Pilar")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+            }
+            updateRow
+        }
+    }
+
+    private var creatorNote: some View {
+        Text("“Built after watching my friend track 20TB of copies by hand, in a spreadsheet.”")
+            .font(.callout)
+            .italic()
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 24)
+    }
+
+    // MARK: Cards
+
+    private func card(@ViewBuilder _ content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func linkRow(_ icon: String, _ title: String, _ subtitle: String, _ url: URL) -> some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.body)
+                    .foregroundStyle(.tint)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.callout.weight(.medium))
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var diagnosticsCard: some View {
+        card {
+            Toggle(isOn: $diagnosticsEnabled) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Performance logs").font(.callout.weight(.medium))
+                    Text("Records per-copy timing details for diagnosing slow transfers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            if diagnosticsEnabled {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([TransferLog.directory])
+                } label: {
+                    Label("Reveal Logs in Finder", systemImage: "folder")
+                }
+                .controlSize(.small)
+            }
+        }
     }
 
     /// Opens a prefilled GitHub issue for a feature request or feedback.
@@ -103,29 +149,6 @@ struct AboutView: View {
             ?? URL(string: "https://github.com/ishaanpilar/CopyWatch/issues/new")!
     }
 
-    @ViewBuilder private var diagnosticsSection: some View {
-        VStack(spacing: 8) {
-            Text("Diagnostics")
-                .font(.headline)
-            Toggle(isOn: $diagnosticsEnabled) {
-                Text("Record transfer performance logs")
-            }
-            .toggleStyle(.switch)
-            .frame(maxWidth: 420)
-            Text("When on, each copy writes a detailed timing log (throughput, read/write bottlenecks, verify time, UI lag). Useful for diagnosing slow or stuttering transfers. Leave off for normal use.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 460)
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([TransferLog.directory])
-            } label: {
-                Label("Reveal Logs in Finder", systemImage: "folder")
-            }
-            .controlSize(.small)
-        }
-    }
-
     @ViewBuilder private var updateRow: some View {
         switch updateStatus {
         case .idle:
@@ -140,25 +163,25 @@ struct AboutView: View {
         case .checking:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Checking for updates…").font(.callout).foregroundStyle(.secondary)
+                Text("Checking…").font(.callout).foregroundStyle(.secondary)
             }
         case .upToDate:
-            Label("You're up to date", systemImage: "checkmark.circle.fill")
+            Label("Up to date", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.callout)
         case .updateAvailable(let newVersion, let url):
-            VStack(spacing: 6) {
-                Label("Version \(newVersion) is available", systemImage: "arrow.up.circle.fill")
+            HStack(spacing: 10) {
+                Label("Version \(newVersion) available", systemImage: "arrow.up.circle.fill")
                     .foregroundStyle(.blue)
                     .font(.callout.bold())
-                Link("Download from GitHub", destination: url)
+                Link("Download", destination: url)
             }
         case .failed(let message):
-            VStack(spacing: 6) {
+            HStack(spacing: 10) {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .font(.callout)
-                Button("Try Again") {
+                Button("Retry") {
                     Task {
                         updateStatus = .checking
                         updateStatus = await UpdateChecker.check()
