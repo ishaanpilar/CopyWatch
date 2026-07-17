@@ -62,7 +62,8 @@ enum Headless {
                       "\(Format.speed(snapshot.bytesPerSecond))  \(current)")
             }
             switch snapshot.status {
-            case .completed, .completedWithErrors, .cancelled, .waitingForVolume, .paused:
+            case .completed, .completedWithErrors, .cancelled,
+                 .waitingForVolume, .paused, .interrupted:
                 done.signal()
             default: break
             }

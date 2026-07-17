@@ -13,10 +13,18 @@ enum FileHasher {
         var remaining = limit ?? .max
         while remaining > 0 {
             try Task.checkCancellation()
-            let want = Int(min(Int64(chunkSize), remaining))
-            guard let data = try handle.read(upToCount: want), !data.isEmpty else { break }
-            hasher.update(data: data)
-            remaining -= Int64(data.count)
+            // Each `read` returns an autoreleased Data; without draining per
+            // chunk, the backing memory piles up until the whole task ends —
+            // which, over a big deep compare, meant tens of GB of RAM. The pool
+            // frees every chunk as soon as it's hashed.
+            let n: Int = try autoreleasepool {
+                let want = Int(min(Int64(chunkSize), remaining))
+                guard let data = try handle.read(upToCount: want), !data.isEmpty else { return 0 }
+                hasher.update(data: data)
+                return data.count
+            }
+            if n == 0 { break }
+            remaining -= Int64(n)
         }
         return hex(hasher.finalize())
     }

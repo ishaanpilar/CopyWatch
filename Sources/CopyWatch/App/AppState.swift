@@ -155,6 +155,63 @@ final class AppState {
         }
     }
 
+    /// Turn a comparison that found differences into an active copy job that
+    /// makes B match A: copies the files missing from B and overwrites the ones
+    /// that differ, skipping everything already identical. Extra files that
+    /// exist only in B are left untouched — a repair never deletes. Direction is
+    /// A (Original) → B (Copy), the "complete the backup" case.
+    func repairFromComparison(_ recordID: UUID) {
+        guard let record = comparisons.first(where: { $0.id == recordID }),
+              !record.isIdentical else { return }
+        let source = record.pathA
+        // B is the destination ROOT itself (the counterpart of A), not a parent
+        // to append a folder name to — relative paths map straight from A onto B.
+        let destRoot = record.pathB
+
+        var job = CopyJob(
+            id: UUID(),
+            name: "Repair: \((source as NSString).lastPathComponent) → \((destRoot as NSString).lastPathComponent)",
+            sourceVolume: .forPath(source),
+            destVolume: .forPath(destRoot),
+            sourcePath: source,
+            destPath: destRoot
+        )
+        job.verifyAfterCopy = true   // a repair should be trustworthy
+        job.status = .scanning
+        jobs.insert(job, at: 0)
+        store.save(job, force: true)
+
+        let jobID = job.id
+        scanTasks[jobID] = Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let (root, records) = try Scanner.scanSelection(paths: [source])
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.mutateJob(jobID) { j in
+                        j.sourcePath = root
+                        j.sourceVolume = .forPath(root)
+                        // destPath stays = B; the engine's reconcile decides what
+                        // to copy vs. skip.
+                        j.files = records
+                        j.totalFiles = records.count
+                        j.totalBytes = records.reduce(0) { $0 + $1.size }
+                        j.status = .ready
+                    }
+                    self.scanTasks[jobID] = nil
+                    self.start(jobID)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.mutateJob(jobID) { j in
+                        j.status = .cancelled
+                        j.statusMessage = "Scan failed: \(error.localizedDescription)"
+                    }
+                    self?.scanTasks[jobID] = nil
+                }
+            }
+        }
+    }
+
     /// Whether copy jobs run one-at-a-time (queued) or all at once.
     var runJobsSerially: Bool = UserDefaults.standard.bool(forKey: "runJobsSerially") {
         didSet {
@@ -204,7 +261,20 @@ final class AppState {
             }
         } else {
             engine = JobEngine(job: job) { [weak self] snapshot in
-                Task { @MainActor [weak self] in self?.apply(snapshot) }
+                // Timestamp at emit so we can measure how long the update waits
+                // to reach the main actor (the "why isn't the UI instant?" lag).
+                let emittedNs = DispatchTime.now().uptimeNanoseconds
+                Task { @MainActor [weak self] in
+                    if TransferLog.shared.active {
+                        let lagMs = Double(DispatchTime.now().uptimeNanoseconds &- emittedNs) / 1e6
+                        TransferLog.shared.log("apply", [
+                            "lagMs": (lagMs * 10).rounded() / 10,
+                            "status": snapshot.status.rawValue,
+                            "files": snapshot.files.count,
+                            "MBps": (snapshot.bytesPerSecond / 1e6 * 10).rounded() / 10])
+                    }
+                    self?.apply(snapshot)
+                }
             }
         }
         engines[jobID] = engine
@@ -262,6 +332,59 @@ final class AppState {
             }
         }
         advanceQueue()
+    }
+
+    /// "Try Again" after a job stopped or finished with failures: reset every
+    /// failed file back to pending (clearing its partial data so it re-copies
+    /// cleanly) and resume. Files already copied/verified are left untouched, so
+    /// only the unfinished work is redone. Used after freeing space, swapping a
+    /// cable, etc.
+    func retry(_ jobID: UUID) {
+        guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        for i in jobs[idx].files.indices where jobs[idx].files[i].status == .failed {
+            jobs[idx].files[i].status = .pending
+            jobs[idx].files[i].bytesCopied = 0
+            jobs[idx].files[i].checksum = nil
+            jobs[idx].files[i].error = nil
+            jobs[idx].files[i].errorFix = nil
+            jobs[idx].files[i].errorIcon = nil
+        }
+        jobs[idx].status = .interrupted
+        jobs[idx].statusMessage = nil
+        jobs[idx].completedAt = nil
+        jobs[idx].recomputeCounters()
+        store.save(jobs[idx], force: true)
+        start(jobID)
+    }
+
+    /// Point a stalled/failed job at a different destination drive and finish the
+    /// backup there. Because files already copied live on the OLD drive, the whole
+    /// source is re-copied to the new drive so it ends up with the complete,
+    /// verified set (smart dedup still skips anything already present there).
+    func changeDestination(_ jobID: UUID, toParentPath newParent: String) {
+        guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        var job = jobs[idx]
+        // destPath already ends in the source folder name — keep it on the new parent.
+        let folderName = (job.destPath as NSString).lastPathComponent
+        job.destVolume = .forPath(newParent)
+        job.destPath = (newParent as NSString).appendingPathComponent(folderName)
+        // Everything must land on the NEW drive: reset the manifest so the full
+        // source is copied over (the reconciler skips anything already there).
+        for i in job.files.indices {
+            job.files[i].status = .pending
+            job.files[i].bytesCopied = 0
+            job.files[i].checksum = nil
+            job.files[i].error = nil
+            job.files[i].errorFix = nil
+            job.files[i].errorIcon = nil
+        }
+        job.status = .interrupted
+        job.statusMessage = "Destination changed to “\(job.destVolume.name)”."
+        job.completedAt = nil
+        job.recomputeCounters()
+        jobs[idx] = job
+        store.save(job, force: true)
+        start(jobID)
     }
 
     // MARK: Job queue (serial mode)

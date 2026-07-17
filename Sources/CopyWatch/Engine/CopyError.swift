@@ -7,6 +7,11 @@ struct CopyDiagnosis: Sendable {
     let title: String     // what went wrong, in human terms
     let fix: String       // what to do about it
     let icon: String      // SF Symbol
+    /// True when the problem is with the destination as a whole (out of space,
+    /// read-only) so every remaining file would fail too. The engine stops the
+    /// transfer in a resumable state instead of churning the rest into failures,
+    /// letting the user free space and Try Again, or switch to another drive.
+    var haltsTransfer: Bool = false
 
     /// Classify an error thrown while operating on `path` (for context in a few
     /// cases). `volumeVanished` lets the caller flag a disconnect it already
@@ -26,8 +31,9 @@ struct CopyDiagnosis: Sendable {
         case ENOSPC, EDQUOT:
             return .init(
                 title: "Destination is full",
-                fix: "The destination drive ran out of space. Free some up, or choose a larger drive, then Resume.",
-                icon: "internaldrive.badge.exclamationmark")
+                fix: "The destination drive ran out of space. Free some up and press Resume, or use Change Destination to finish the backup on a larger drive. Nothing already copied is lost.",
+                icon: "internaldrive.badge.exclamationmark",
+                haltsTransfer: true)
         case EACCES, EPERM:
             return .init(
                 title: "Permission denied",
@@ -36,8 +42,9 @@ struct CopyDiagnosis: Sendable {
         case EROFS:
             return .init(
                 title: "Destination is read-only",
-                fix: "The destination became read-only — often an NTFS/Windows-formatted drive, or one mounted read-only. Reformat it for Mac (APFS/ExFAT) or remount it with write access.",
-                icon: "pencil.slash")
+                fix: "The destination became read-only — often an NTFS/Windows-formatted drive, or one mounted read-only. Remount it with write access and press Resume, or use Change Destination to finish on a Mac-formatted (APFS/ExFAT) drive.",
+                icon: "pencil.slash",
+                haltsTransfer: true)
         case ENAMETOOLONG:
             return .init(
                 title: "Name too long for the destination",

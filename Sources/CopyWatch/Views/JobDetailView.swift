@@ -166,6 +166,26 @@ struct JobDetailView: View {
                 EmptyView()
             }
 
+            // Recovery after a stall or a finish with failures: re-copy the
+            // unfinished files, or move the whole backup to another drive.
+            if job.status == .completedWithErrors {
+                Button {
+                    appState.retry(job.id)
+                } label: {
+                    Label("Try Again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Re-copy the files that didn't finish")
+            }
+            if job.status == .interrupted || job.status == .completedWithErrors {
+                Button {
+                    chooseNewDestination()
+                } label: {
+                    Label("Change Destination…", systemImage: "externaldrive.badge.plus")
+                }
+                .help("Finish this backup on a different drive")
+            }
+
             if job.status.isActive && job.status != .scanning {
                 Button(role: .destructive) {
                     appState.cancel(job.id)
@@ -217,6 +237,19 @@ struct JobDetailView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
         }
+    }
+
+    /// Pick a new destination drive/folder and continue the backup there.
+    private func chooseNewDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose a drive or folder to finish this backup into."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        appState.changeDestination(job.id, toParentPath: url.path)
     }
 
     private func exportCertificate() {

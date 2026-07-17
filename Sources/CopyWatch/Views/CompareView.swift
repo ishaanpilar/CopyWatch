@@ -74,7 +74,8 @@ struct CompareView: View {
                     record: record,
                     isExpanded: expanded == record.id,
                     toggle: { expanded = (expanded == record.id) ? nil : record.id },
-                    delete: { appState.deleteComparison(record.id) }
+                    delete: { appState.deleteComparison(record.id) },
+                    repair: { appState.repairFromComparison(record.id) }
                 )
             }
         }
@@ -103,6 +104,11 @@ struct ComparisonCard: View {
     let isExpanded: Bool
     let toggle: () -> Void
     let delete: () -> Void
+    let repair: () -> Void
+    @State private var confirmRepair = false
+
+    /// Files that would be copied A → B to make the copy complete.
+    private var repairCount: Int { record.missing.count + record.differing.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -140,6 +146,17 @@ struct ComparisonCard: View {
                     Text("\(record.missing.count) missing · \(record.differing.count) differ · \(record.extras.count) extra")
                         .font(.callout)
                         .foregroundStyle(.orange)
+                    Spacer()
+                    if repairCount > 0 {
+                        Button {
+                            confirmRepair = true
+                        } label: {
+                            Label("Repair", systemImage: "wrench.and.screwdriver")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .help("Start a copy job that fills in the missing and different files")
+                    }
                 }
             }
 
@@ -149,6 +166,15 @@ struct ComparisonCard: View {
         }
         .padding(12)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .confirmationDialog(
+            "Repair “\((record.pathB as NSString).lastPathComponent)” from “\((record.pathA as NSString).lastPathComponent)”?",
+            isPresented: $confirmRepair, titleVisibility: .visible
+        ) {
+            Button("Start Repair Copy") { repair() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Copies the \(record.missing.count) missing and \(record.differing.count) different file(s) from A into B, skipping everything already identical. Files that exist only in B are left untouched — nothing is deleted.")
+        }
     }
 
     private func summary(_ side: String, files: Int, bytes: Int64) -> some View {

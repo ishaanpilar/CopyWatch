@@ -64,6 +64,13 @@ final class JobEngine: @unchecked Sendable {
     // MARK: Main loop
 
     private func run() async {
+        TransferLog.shared.begin(label: job.name)
+        TransferLog.shared.log("config", [
+            "totalFiles": job.totalFiles, "totalBytes": job.totalBytes,
+            "verify": job.verifyAfterCopy, "destinations": job.allDestinations.count,
+            "chunkBytes": Self.chunkSize])
+        defer { TransferLog.shared.end() }
+
         // Re-resolve roots; the drives may have remounted somewhere else.
         guard let src = job.sourceVolume.resolve(job.sourcePath) else {
             return finishWaiting("Source drive “\(job.sourceVolume.name)” is not connected.")
@@ -135,7 +142,16 @@ final class JobEngine: @unchecked Sendable {
                     job.files[i].status = .pending
                     return finishWaiting(CopyDiagnosis.diagnose(error, volumeVanished: true).fix)
                 }
-                job.files[i].applyFailure(CopyDiagnosis.diagnose(error, path: job.files[i].relativePath))
+                let diag = CopyDiagnosis.diagnose(error, path: job.files[i].relativePath)
+                if diag.haltsTransfer {
+                    // The destination is full or read-only — every remaining file
+                    // would fail too. Stop resumably and keep this file pending
+                    // (its partial .cwpart is preserved) so Try Again continues
+                    // exactly where it left off.
+                    job.files[i].status = .pending
+                    return finishInterrupted(diag)
+                }
+                job.files[i].applyFailure(diag)
                 job.failedFiles += 1
                 emit(force: true)
             }
@@ -228,7 +244,14 @@ final class JobEngine: @unchecked Sendable {
         if job.verifyAfterCopy {
             job.currentFile = "Verifying: \(record.relativePath)"
             emit(force: true)
+            let vT = DispatchTime.now().uptimeNanoseconds
             let destHash = try FileHasher.sha256(of: destURL)
+            if TransferLog.shared.active {
+                let sec = Double(DispatchTime.now().uptimeNanoseconds &- vT) / 1e9
+                TransferLog.shared.log("verify", [
+                    "file": index, "bytes": record.size, "seconds": round3(sec),
+                    "MBps": sec > 0 ? round(Double(record.size) / 1e6 / sec) : 0])
+            }
             if destHash == job.files[index].checksum {
                 job.files[index].status = .verified
                 job.verifiedFiles += 1
@@ -323,10 +346,14 @@ final class JobEngine: @unchecked Sendable {
             var remaining = resumeOffset
             while remaining > 0 {
                 try Task.checkCancellation()
-                let want = Int(min(Int64(Self.chunkSize), remaining))
-                guard let chunk = try srcHandle.read(upToCount: want), !chunk.isEmpty else { break }
-                hasher.update(data: chunk)
-                remaining -= Int64(chunk.count)
+                let n: Int = try autoreleasepool {
+                    let want = Int(min(Int64(Self.chunkSize), remaining))
+                    guard let chunk = try srcHandle.read(upToCount: want), !chunk.isEmpty else { return 0 }
+                    hasher.update(data: chunk)
+                    return chunk.count
+                }
+                if n == 0 { break }
+                remaining -= Int64(n)
             }
             offset = resumeOffset
             setBytesCopied(index, offset)
@@ -377,17 +404,23 @@ final class JobEngine: @unchecked Sendable {
         let partHandles = try parts.map { try FileHandle(forReadingFrom: $0) }
         defer { for h in partHandles { try? h.close() } }
         var valid: Int64 = 0
+        enum Step { case stop, more(Int64) }
         while true {
             try Task.checkCancellation()
-            guard let sChunk = try src.read(upToCount: Self.chunkSize), !sChunk.isEmpty else { break }
-            for h in partHandles {
-                guard let pChunk = try h.read(upToCount: sChunk.count), pChunk == sChunk else {
-                    return valid
+            let step: Step = try autoreleasepool {
+                guard let sChunk = try src.read(upToCount: Self.chunkSize), !sChunk.isEmpty else { return .stop }
+                for h in partHandles {
+                    guard let pChunk = try h.read(upToCount: sChunk.count), pChunk == sChunk else {
+                        return .stop
+                    }
                 }
+                return .more(Int64(sChunk.count))
             }
-            valid += Int64(sChunk.count)
+            switch step {
+            case .stop: return valid
+            case .more(let c): valid += c
+            }
         }
-        return valid
     }
 
     private func destName(for root: URL) -> String {
@@ -414,10 +447,16 @@ final class JobEngine: @unchecked Sendable {
             var hasher = seededHasher
             do {
                 while true {
-                    guard let chunk = try source.read(upToCount: Self.chunkSize),
-                          !chunk.isEmpty else { break }
-                    hasher.update(data: chunk)
-                    if !pipe.push(chunk) { break }   // writer aborted
+                    // autoreleasepool per chunk: the pipe retains what it needs,
+                    // so only the in-flight chunks stay resident (not the whole
+                    // file's worth of autoreleased reads).
+                    let more = try autoreleasepool { () -> Bool in
+                        guard let chunk = try source.read(upToCount: Self.chunkSize),
+                              !chunk.isEmpty else { return false }
+                        hasher.update(data: chunk)
+                        return pipe.push(chunk)   // false = EOF handled below or writer aborted
+                    }
+                    if !more { break }
                 }
                 result.hash = FileHasher.hex(hasher.finalize())
             } catch {
@@ -432,11 +471,25 @@ final class JobEngine: @unchecked Sendable {
         var offset = startOffset
         var writeError: Error?
         setBytesCopied(fileIndex, offset)
+
+        // Diagnostics: measure real (unsmoothed) throughput and where the loop
+        // spends its time — waiting on pop() (read-bound), inside write()
+        // (write-bound), or in emit()/bookkeeping (UI overhead).
+        let diag = TransferLog.shared.active
+        let loopStart = DispatchTime.now().uptimeNanoseconds
+        var sampleAtNs = loopStart
+        var bytesAtSample = offset
+        var writeNs: UInt64 = 0, popNs: UInt64 = 0, emitNs: UInt64 = 0
+
         loop: while true {
             do { try Task.checkCancellation() } catch { writeError = error; break loop }
+            let popT = diag ? DispatchTime.now().uptimeNanoseconds : 0
             guard let chunk = pipe.pop() else { break }   // drained + reader finished
+            if diag { popNs &+= DispatchTime.now().uptimeNanoseconds &- popT }
             do {
+                let wT = diag ? DispatchTime.now().uptimeNanoseconds : 0
                 for h in writeHandles { try h.write(contentsOf: chunk) }
+                if diag { writeNs &+= DispatchTime.now().uptimeNanoseconds &- wT }
             } catch {
                 writeError = error
                 break loop
@@ -444,14 +497,56 @@ final class JobEngine: @unchecked Sendable {
             offset += Int64(chunk.count)
             setBytesCopied(fileIndex, offset)
             recordSpeed(delta: Int64(chunk.count))
+            let eT = diag ? DispatchTime.now().uptimeNanoseconds : 0
             emit()
+            if diag {
+                emitNs &+= DispatchTime.now().uptimeNanoseconds &- eT
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                if nowNs &- sampleAtNs >= 250_000_000 {   // ~4×/sec
+                    let dt = Double(nowNs &- sampleAtNs) / 1e9
+                    let instMBps = Double(offset - bytesAtSample) / 1e6 / dt
+                    TransferLog.shared.log("sample", [
+                        "file": fileIndex,
+                        "instMBps": round(instMBps),
+                        "avgMBps": round(job.bytesPerSecond / 1e6),
+                        "pipeDepth": (writeHandles.count),   // context only
+                        "readBlockedMs": round(Double(pipe.writeBlockedNs) / 1e6),
+                        "writeBlockedMs": round(Double(pipe.readBlockedNs) / 1e6),
+                    ])
+                    sampleAtNs = nowNs
+                    bytesAtSample = offset
+                }
+            }
         }
         if writeError != nil { pipe.abort() }
         done.wait()   // reader has released the source handle
+
+        if diag {
+            let totalNs = DispatchTime.now().uptimeNanoseconds &- loopStart
+            let sec = Double(totalNs) / 1e9
+            let bytes = offset - startOffset
+            TransferLog.shared.log("stream_end", [
+                "file": fileIndex,
+                "bytes": bytes,
+                "seconds": round3(sec),
+                "MBps": sec > 0 ? round(Double(bytes) / 1e6 / sec) : 0,
+                // read-bound = consumer waited on empty pipe; write-bound =
+                // producer waited on full pipe.
+                "readBoundMs": round(Double(pipe.writeBlockedNs) / 1e6),
+                "writeBoundMs": round(Double(pipe.readBlockedNs) / 1e6),
+                "writeCallMs": round(Double(writeNs) / 1e6),
+                "popCallMs": round(Double(popNs) / 1e6),
+                "emitMs": round(Double(emitNs) / 1e6),
+                "maxPipeDepth": pipe.maxDepth,
+            ])
+        }
         if let e = writeError { throw e }
         if let e = result.error { throw e }
         return result.hash
     }
+
+    private func round(_ x: Double) -> Double { (x * 10).rounded() / 10 }
+    private func round3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }
 
     /// Byte-compare an existing partial against the source while feeding the
     /// hasher. Returns the number of verified prefix bytes (0 = unusable partial).
@@ -466,18 +561,25 @@ final class JobEngine: @unchecked Sendable {
         emit(force: true)
 
         var verified: Int64 = 0
-        while true {
+        enum Step { case done, mismatch, more(Int64) }
+        loop: while true {
             try Task.checkCancellation()
-            guard let partChunk = try partHandle.read(upToCount: Self.chunkSize),
-                  !partChunk.isEmpty else { break }
-            guard let srcChunk = try srcHandle.read(upToCount: partChunk.count),
-                  srcChunk == partChunk else {
-                return 0
+            let step: Step = try autoreleasepool {
+                guard let partChunk = try partHandle.read(upToCount: Self.chunkSize),
+                      !partChunk.isEmpty else { return .done }
+                guard let srcChunk = try srcHandle.read(upToCount: partChunk.count),
+                      srcChunk == partChunk else { return .mismatch }
+                hasher.update(data: partChunk)
+                return .more(Int64(partChunk.count))
             }
-            hasher.update(data: partChunk)
-            verified += Int64(partChunk.count)
-            setBytesCopied(fileIndex, verified)
-            emit()
+            switch step {
+            case .done: break loop
+            case .mismatch: return 0
+            case .more(let c):
+                verified += c
+                setBytesCopied(fileIndex, verified)
+                emit()
+            }
         }
         // Leave srcHandle positioned exactly at the end of the verified prefix.
         try srcHandle.seek(toOffset: UInt64(verified))
@@ -563,6 +665,18 @@ final class JobEngine: @unchecked Sendable {
         emit(force: true)
     }
 
+    /// Stop the transfer in a resumable state after a destination-wide problem
+    /// (full / read-only). The drive is still connected, so this is distinct
+    /// from `waitingForVolume`: the user fixes the cause and Tries Again, or
+    /// switches the destination.
+    private func finishInterrupted(_ diagnosis: CopyDiagnosis) {
+        job.currentFile = nil
+        job.bytesPerSecond = 0
+        job.status = .interrupted
+        job.statusMessage = "\(diagnosis.title). \(diagnosis.fix)"
+        emit(force: true)
+    }
+
     private func volumeVanished(srcRoot: URL, destRoots: [URL]) -> Bool {
         let fm = FileManager.default
         if !fm.fileExists(atPath: srcRoot.path) { return true }
@@ -579,14 +693,27 @@ private final class ChunkPipe: @unchecked Sendable {
     private var aborted = false
     private let cond = NSCondition()
 
+    // Diagnostics (nanoseconds). `readBlockedNs` is time the reader/producer
+    // spent stalled because the pipe was full → the WRITE side (disk write) is
+    // the bottleneck. `writeBlockedNs` is time the writer/consumer spent stalled
+    // because the pipe was empty → the READ side (disk read) is the bottleneck.
+    private(set) var readBlockedNs: UInt64 = 0
+    private(set) var writeBlockedNs: UInt64 = 0
+    private(set) var maxDepth = 0
+
     init(capacity: Int) { self.capacity = capacity }
 
     /// Producer: blocks while full. Returns false if the consumer aborted.
     func push(_ data: Data) -> Bool {
         cond.lock(); defer { cond.unlock() }
-        while buffer.count >= capacity && !aborted { cond.wait() }
+        if buffer.count >= capacity && !aborted {
+            let w = DispatchTime.now().uptimeNanoseconds
+            while buffer.count >= capacity && !aborted { cond.wait() }
+            readBlockedNs &+= DispatchTime.now().uptimeNanoseconds &- w
+        }
         if aborted { return false }
         buffer.append(data)
+        if buffer.count > maxDepth { maxDepth = buffer.count }
         cond.signal()
         return true
     }
@@ -594,7 +721,11 @@ private final class ChunkPipe: @unchecked Sendable {
     /// Consumer: blocks until a chunk is available; nil once drained and closed.
     func pop() -> Data? {
         cond.lock(); defer { cond.unlock() }
-        while buffer.isEmpty && !closed && !aborted { cond.wait() }
+        if buffer.isEmpty && !closed && !aborted {
+            let w = DispatchTime.now().uptimeNanoseconds
+            while buffer.isEmpty && !closed && !aborted { cond.wait() }
+            writeBlockedNs &+= DispatchTime.now().uptimeNanoseconds &- w
+        }
         if buffer.isEmpty { return nil }
         let d = buffer.removeFirst()
         cond.signal()

@@ -33,6 +33,8 @@ CopyWatch was built to remove the guesswork:
 - **Get a shareable integrity certificate** — every finished backup produces a certificate with a unique ID and the full checksum manifest, so you can prove the copy is intact.
 - **Benchmark your drives** — measure real read/write speed and health to diagnose a slow backup or catch a drive that's starting to fail.
 - **Plain-language errors** — if something goes wrong, CopyWatch tells you what happened (drive disconnected, cable unstable, disk full, permission denied…) and how to fix it.
+- **Never lose a transfer to a full drive** — if the destination runs out of space (or goes read-only) mid-copy, CopyWatch stops safely and keeps your progress. Free up space and **Try Again**, or **Change Destination** to finish the backup on a bigger drive — no starting over.
+- **Repair a mismatched copy** — after comparing two folders, one click on **Repair** copies the missing and different files from the original into the copy, skipping everything already identical. It never deletes.
 
 ## Install it
 
