@@ -18,6 +18,18 @@ CopyWatch was built to remove the guesswork:
 - If something goes wrong partway through, it **remembers exactly where it stopped** and picks up from there — even if that's tomorrow, on a different Mac, after the drive got moved somewhere else.
 - It keeps a **permanent history** of every backup you've ever run, so you can always look back and confirm what got copied, when, and whether it's still intact.
 
+## Organize everything by project
+
+Since version 2.0, CopyWatch revolves around **Projects** — because nobody thinks in "copy jobs." You think in *the client shoot*, *the Iceland trip*, *batch 12*.
+
+- **Create a project once** — pick a folder template (Media Production, Photography, Event Coverage, Audio & Podcast, Client Work, Data & Research, or your own) and the drive(s) it lives on. CopyWatch creates the folder structure; you stay free to reorganize.
+- **Insert a card, click Import** — CopyWatch recognizes camera, drone, GoPro, and audio-recorder cards by their on-disk structure (not their names) and offers to file each one into the right project folder, continuing the *Card 1, Card 2, Card 3…* series automatically.
+- **See health at a glance** — every project shows **Protected** (everything verified), **Backing up…**, or **Needs attention** with the exact reason.
+- **A permanent record per card** — when each card was imported, how many files, how big, verified or not, and whether the originals were cleared afterwards.
+- **A full timeline** — every import, verification, and cleanup, day by day, for the life of the project.
+
+The **Home** tab ties it together: a drop zone, whatever cards are connected right now (one click to import, one to browse), copies in progress, your recent projects, and saved destinations you can drop files straight onto.
+
 ## What it can do
 
 - **Copy folders or individual files** to any drive, with a live progress view.
@@ -31,6 +43,10 @@ CopyWatch was built to remove the guesswork:
 - **Back up to several drives at once** — one source, two or more verified copies in a single pass. Save a destination that holds multiple folders and every drop fans out to all of them.
 - **Skip what's already there** — CopyWatch recognises files that are already backed up (by checksum, not just name and size) and skips them, so re-running a backup only copies what actually changed.
 - **Get a shareable integrity certificate** — every finished backup produces a certificate with a unique ID and the full checksum manifest, so you can prove the copy is intact.
+- **Export an industry-standard MHL** — a Media Hash List that other offload tools (Hedge, ShotPut Pro, Silverstack, Resolve) can verify your copy against.
+- **Choose your checksum** — SHA-256 (cryptographic, powers the certificate) or xxHash64 (the media-industry standard, faster on very fast drives). Verification reads back from the drive itself, never from the memory cache, so a bad cable or failing drive is actually caught.
+- **Keep file metadata intact** — Finder tags, permissions, and creation dates survive the copy (Finder's own copies lose the creation date).
+- **Compare in Finder, instantly** — one click opens Finder's Get Info windows for the source and every destination side by side; file-selection jobs can do the same for the exact items you picked.
 - **Benchmark your drives** — measure real read/write speed and health to diagnose a slow backup or catch a drive that's starting to fail.
 - **Plain-language errors** — if something goes wrong, CopyWatch tells you what happened (drive disconnected, cable unstable, disk full, permission denied…) and how to fix it.
 - **Never lose a transfer to a full drive** — if the destination runs out of space (or goes read-only) mid-copy, CopyWatch stops safely and keeps your progress. Free up space and **Try Again**, or **Change Destination** to finish the backup on a bigger drive — no starting over.
@@ -51,14 +67,21 @@ brew install --cask copywatch
 
 ## Using it
 
-1. Open CopyWatch and click **+ New Copy Job**.
-2. Choose where you're copying **from** (a folder, or select individual files) and where you're copying **to**.
-3. Click **Start Copy**. CopyWatch scans everything first so it knows exactly how much work there is, then copies and verifies each file.
-4. When it's done, you'll see a green **"Everything is good"** — every file made it and matches the original.
+**The project way (recommended):**
+
+1. Click **New Project**, name it, pick a template and the drive it lives on.
+2. Insert a camera card. CopyWatch recognizes it and offers to import it into the right folder — confirm, and it copies and verifies.
+3. Insert the next card. Repeat over as many days as the job takes. The project keeps everything organized with a full history.
+
+**The quick way:**
+
+Drag files anywhere into the window (or onto a saved destination on the Home tab), pick where they go, done. Or click **+ New Copy Job** — the file picker opens first, then you confirm the destination and start. Verify, checksum choice, and multi-drive copying live under **Options**.
+
+Either way, when it's done you'll see a green **"Everything is good"** — every file made it and matches the original.
 
 If a drive disconnects, or you quit the app, or your Mac restarts — just open CopyWatch again and hit **Resume**. Nothing is lost, and nothing gets copied twice.
 
-Backing up an iPhone or camera works the same way: connect it, find it under **Devices** in the sidebar, and pick what you want backed up.
+Backing up an iPhone or camera works the same way: connect it, and it appears on the Home tab and under **Devices** in the sidebar — browse its media and pick what you want backed up.
 
 ## Frequently asked questions
 
@@ -95,7 +118,7 @@ Requires macOS 14+ and Xcode command-line tools. No external dependencies — it
 ### Headless mode (testing / scripting)
 
 ```sh
-CopyWatch --headless copy <source> <destParent> [--no-verify]
+CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify] [--xxhash]
 CopyWatch --headless compare <a> <b> [--deep]
 ```
 
@@ -103,16 +126,16 @@ Headless jobs are saved to the same history the app shows.
 
 ### Code layout
 
-- `Sources/CopyWatch/Engine/` — scanner, checksummer, reconciler, and the copy engine (chunked copy, mid-file resume, verify).
-- `Sources/CopyWatch/Models/` + `Store/` — job/manifest models, JSON persistence in `~/Library/Application Support/CopyWatch/`.
-- `Sources/CopyWatch/System/` — volume mount/unmount watching, eject, sleep blocking, notifications, Trash search.
-- `Sources/CopyWatch/Views/` — SwiftUI: sidebar, job detail with comparison dashboard, compare tool, new-job sheet, device gallery.
+- `Sources/CopyWatch/Engine/` — scanner, checksums (SHA-256 / xxHash64), reconciler, MHL export, certificates, and the copy engine (chunked pipelined copy, mid-file resume, cache-bypassed verify, parallel multi-destination writes).
+- `Sources/CopyWatch/Models/` + `Store/` — project/job/manifest models, JSON persistence in `~/Library/Application Support/CopyWatch/`.
+- `Sources/CopyWatch/System/` — volume watching, camera-card detection, Finder Get Info, eject, sleep/App Nap blocking, notifications, Trash search.
+- `Sources/CopyWatch/Views/` — SwiftUI: Home, project dashboard & workspaces, job detail with comparison dashboard, compare tool, sheets, device gallery.
 
 ### Roadmap
 
 - Passive Finder-activity logger (best-effort history of copies made outside CopyWatch).
-- xxHash64 + MHL manifest export for postproduction-standard interchange.
 - Code signing & notarization, to remove the Gatekeeper warning on first launch.
+- Adding a drive to an existing project (with automatic backfill of earlier imports).
 
 ### Contributing
 
