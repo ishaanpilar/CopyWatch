@@ -212,12 +212,28 @@ struct JobDetailView: View {
                 .help("Open the integrity certificate for this backup")
             }
 
+            if !job.isDeviceJob {
+                Button {
+                    getInfoFolders()
+                } label: {
+                    Label("Get Info", systemImage: "info.circle")
+                }
+                .help("Open Finder's Get Info for the source and every destination, side by side")
+            }
+
             Menu {
                 if !job.isDeviceJob {
                     Button("Reveal Source in Finder") { reveal(job.sourcePath) }
                 }
                 ForEach(Array(job.allDestinations.enumerated()), id: \.offset) { _, dest in
                     Button("Reveal \(dest.volume.name) in Finder") { reveal(dest.path) }
+                }
+                if !job.isDeviceJob {
+                    Divider()
+                    Button("Get Info: Source & Destination") { getInfoFolders() }
+                    if job.isFileSelection == true {
+                        Button("Get Info: Copied Files") { getInfoSelectedItems() }
+                    }
                 }
                 Divider()
                 if job.status == .completed || job.status == .completedWithErrors {
@@ -238,6 +254,36 @@ struct JobDetailView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
         }
+    }
+
+    // MARK: Get Info (Finder)
+
+    /// Source folder + every destination root, in one click — the side-by-side
+    /// count/size comparison people already trust Finder for.
+    private func getInfoFolders() {
+        FinderInfo.open(paths: [job.sourcePath] + job.allDestinations.map(\.path))
+    }
+
+    /// File-selection jobs only: Get Info on the items the user actually
+    /// picked, at BOTH ends. The manifest's distinct top-level components are
+    /// exactly that original selection, so source and destination pair up.
+    private func getInfoSelectedItems() {
+        var seen = Set<String>()
+        var topLevel: [String] = []
+        for f in job.files {
+            let first = f.relativePath.components(separatedBy: "/")[0]
+            if seen.insert(first).inserted { topLevel.append(first) }
+        }
+        // Pair each item source-side then destination-side so related windows
+        // stack adjacently in Finder. FinderInfo caps the total.
+        var paths: [String] = []
+        for item in topLevel {
+            paths.append((job.sourcePath as NSString).appendingPathComponent(item))
+            for dest in job.allDestinations {
+                paths.append((dest.path as NSString).appendingPathComponent(item))
+            }
+        }
+        FinderInfo.open(paths: paths)
     }
 
     /// Pick a new destination drive/folder and continue the backup there.

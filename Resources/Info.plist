@@ -38,6 +38,8 @@
     <string>CopyWatch needs access to copy files you drop from your Downloads folder.</string>
     <key>NSNetworkVolumesUsageDescription</key>
     <string>CopyWatch copies and verifies files to and from network volumes.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>CopyWatch opens Finder's Get Info windows so you can compare the source and destination of a copy.</string>
     <key>NSServices</key>
     <array>
         <dict>

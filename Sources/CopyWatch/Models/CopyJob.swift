@@ -73,6 +73,20 @@ struct CopyJob: Codable, Identifiable, Hashable {
     var sourceTrashedAt: Date?
     var sourceTrashedCount: Int?
 
+    /// True when the user picked individual files (or a mixed selection)
+    /// rather than one folder — enables per-item Get Info comparisons.
+    /// Optional so pre-existing job files keep decoding.
+    var isFileSelection: Bool?
+
+    /// The production this copy belongs to. All three are Optional so job
+    /// files from before Projects existed keep decoding (a missing key on a
+    /// non-optional field would silently drop the record).
+    var projectID: UUID?
+    /// Display name within the project's Source Media list: "Sony FX3 Card 2".
+    var sourceLabel: String?
+    /// Folder inside the project the copy landed in: "01_Footage/Card 2".
+    var projectFolder: String?
+
     var status: JobStatus = .scanning
     var verifyAfterCopy: Bool = true
     /// Checksum algorithm for copy + verify. Optional for back-compat: jobs

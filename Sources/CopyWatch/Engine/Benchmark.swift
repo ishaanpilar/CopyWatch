@@ -47,7 +47,7 @@ enum Benchmark {
                 progress(.writing(Double(i + 1) / Double(chunks)))
             }
         }
-        fcntl(wfd, F_FULLFSYNC, 0)   // force everything to the platters/flash
+        _ = fcntl(wfd, F_FULLFSYNC, 0)   // force everything to the platters/flash
         close(wfd)
         let writeElapsed = max(Date().timeIntervalSince(writeStart), 0.001)
         let writeBps = Double(Int64(chunks) * Int64(chunkSize)) / writeElapsed

@@ -16,6 +16,8 @@ final class JobStore: @unchecked Sendable {
             at: base.appendingPathComponent("jobs"), withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(
             at: base.appendingPathComponent("compares"), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: base.appendingPathComponent("projects"), withIntermediateDirectories: true)
     }
 
     private func jobURL(_ id: UUID) -> URL {
@@ -76,6 +78,24 @@ final class JobStore: @unchecked Sendable {
 
     func delete(_ record: ComparisonRecord) {
         queue.async { [self] in try? FileManager.default.removeItem(at: compareURL(record.id)) }
+    }
+
+    // MARK: Projects — small files, saved synchronously on every change.
+
+    private func projectURL(_ id: UUID) -> URL {
+        root.appendingPathComponent("projects/\(id.uuidString).json")
+    }
+
+    func save(_ project: Project) {
+        queue.sync { [self] in write(project, to: projectURL(project.id)) }
+    }
+
+    func loadProjects() -> [Project] {
+        load(from: root.appendingPathComponent("projects"))
+    }
+
+    func delete(_ project: Project) {
+        queue.async { [self] in try? FileManager.default.removeItem(at: projectURL(project.id)) }
     }
 
     // MARK: Destination presets — small list, always written whole and in full.

@@ -1,7 +1,11 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 enum SidebarSelection: Hashable {
+    case home
+    case projects
+    case project(UUID)
     case job(UUID)
     case compare
     case destinations
@@ -21,6 +25,7 @@ struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var selection: SidebarSelection?
     @State private var showNewJob = false
+    @State private var showNewProject = false
     @State private var newJobSources: [String] = []
     @State private var newJobDests: [String] = []
     @State private var isDropTargeted = false
@@ -33,6 +38,24 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280)
         } detail: {
             switch selection {
+            case .home:
+                HomeView(
+                    onSelect: { selection = $0 },
+                    onNewJob: { promptNewJob() },
+                    onNewJobWithSources: { sources in
+                        newJobSources = sources
+                        newJobDests = []
+                        showNewJob = true
+                    },
+                    onNewProject: { showNewProject = true })
+            case .projects:
+                ProjectsDashboardView(
+                    onOpen: { selection = .project($0) },
+                    onNewProject: { showNewProject = true })
+            case .project(let id):
+                ProjectWorkspaceView(projectID: id) { jobID in
+                    selection = .job(jobID)
+                }
             case .job(let id):
                 if let job = appState.jobs.first(where: { $0.id == id }) {
                     JobDetailView(job: job)
@@ -67,13 +90,11 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    newJobSources = []
-                    newJobDests = []
-                    showNewJob = true
+                    promptNewJob()
                 } label: {
                     Label("New Copy Job", systemImage: "plus")
                 }
-                .help("Create a new tracked copy job")
+                .help("Choose what to copy — then confirm where it goes")
             }
             ToolbarItem(placement: .automatic) {
                 Menu {
@@ -135,10 +156,23 @@ struct ContentView: View {
         )) { dropped in
             DropDestinationSheet(sources: dropped.paths)
         }
+        .sheet(isPresented: $showNewProject) {
+            NewProjectSheet { id in
+                selection = .project(id)
+            }
+        }
+        .sheet(item: Binding(
+            get: { appState.pendingCardImport },
+            set: { appState.pendingCardImport = $0 }
+        )) { card in
+            ProjectImportSheet(card: card)
+        }
         .onChange(of: appState.pendingDrop) { _, paths in
             presentDrop(paths)
         }
         .onAppear {
+            // Everything starts from Home.
+            if selection == nil { selection = .home }
             // Seed so launch (with existing history) doesn't look like a new
             // drop and auto-navigate away from "No job selected".
             lastNewestJobID = appState.jobs.first?.id
@@ -160,6 +194,21 @@ struct ContentView: View {
         guard let paths, !paths.isEmpty else { return }
         dropSources = paths
         appState.pendingDrop = nil
+    }
+
+    /// New Copy Job goes straight to the Finder picker; the sheet then opens
+    /// already filled in, one step from starting. Cancel = nothing opens.
+    private func promptNewJob() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Copy"
+        panel.message = "Choose a folder, or select individual files and folders to copy."
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        newJobSources = panel.urls.map(\.path)
+        newJobDests = []
+        showNewJob = true
     }
 
     private var emptyState: some View {

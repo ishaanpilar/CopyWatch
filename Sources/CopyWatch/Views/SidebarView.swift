@@ -7,6 +7,28 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
+            Section {
+                Label("Home", systemImage: "house")
+                    .tag(SidebarSelection.home)
+            }
+
+            Section("Projects") {
+                Label("All Projects", systemImage: "rectangle.grid.2x2")
+                    .tag(SidebarSelection.projects)
+                ForEach(appState.projects) { project in
+                    HStack {
+                        Label(project.name, systemImage: "folder")
+                            .lineLimit(1)
+                        Spacer()
+                        Circle()
+                            .fill(appState.health(of: project).tint)
+                            .frame(width: 7, height: 7)
+                            .help(appState.health(of: project).label)
+                    }
+                    .tag(SidebarSelection.project(project.id))
+                }
+            }
+
             if !appState.activeJobs.isEmpty {
                 Section("Active") {
                     ForEach(appState.activeJobs) { job in

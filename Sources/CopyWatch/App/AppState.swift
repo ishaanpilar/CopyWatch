@@ -14,11 +14,18 @@ struct CameraDeviceInfo: Identifiable, Hashable {
 @Observable
 final class AppState {
     var jobs: [CopyJob] = []
+    var projects: [Project] = []
     var comparisons: [ComparisonRecord] = []
     var volumes: [MountedVolume] = []
     var devices: [CameraDeviceInfo] = []
     var destinationPresets: [DestinationPreset] = []
     var benchmarks: [BenchmarkResult] = []
+
+    /// A just-mounted camera card awaiting the Smart Import prompt.
+    var pendingCardImport: CardDetector.DetectedCard?
+    /// Volumes already offered this session, so one card mounts → one prompt.
+    /// (Internal, not private: the Projects extension lives in its own file.)
+    @ObservationIgnored var promptedCardVolumes: Set<String> = []
     var benchmarkPhase: Benchmark.Phase?
     var benchmarkVolumePath: String?
     var benchmarkError: String?
@@ -33,6 +40,7 @@ final class AppState {
     init(store: JobStore = JobStore()) {
         self.store = store
         jobs = store.loadJobs().sorted { $0.createdAt > $1.createdAt }
+        projects = store.loadProjects().sorted { $0.createdAt > $1.createdAt }
         comparisons = store.loadComparisons().sorted { $0.date > $1.date }
         destinationPresets = store.loadDestinations()
         benchmarks = store.loadBenchmarks().sorted { $0.date > $1.date }
@@ -57,8 +65,14 @@ final class AppState {
             guard let self else { return }
             self.volumes = self.volumeWatcher.volumes
         }
-        volumeWatcher.onMount = { [weak self] vol in self?.volumeReturned(vol) }
-        volumeWatcher.onUnmount = { [weak self] path in self?.volumeLost(path) }
+        volumeWatcher.onMount = { [weak self] vol in
+            self?.volumeReturned(vol)
+            self?.cardMounted(vol)
+        }
+        volumeWatcher.onUnmount = { [weak self] path in
+            self?.volumeLost(path)
+            self?.promptedCardVolumes.remove(path)
+        }
 
         deviceWatcher = DeviceWatcher()
         deviceWatcher.changed = { [weak self] in self?.refreshDevices() }
@@ -77,12 +91,16 @@ final class AppState {
     /// (Scanner.scanSelection finds their common ancestor and preserves enough
     /// structure to avoid collisions). Pass more than one `destParentPaths` to
     /// back up the same source to several drives in one pass.
+    @discardableResult
     func createJob(
         sourcePaths: [String], destParentPaths: [String], verify: Bool,
-        algorithm: ChecksumAlgorithm = .sha256
-    ) {
-        guard !sourcePaths.isEmpty, let primaryParent = destParentPaths.first else { return }
-        let isSingleFolder = sourcePaths.count == 1
+        algorithm: ChecksumAlgorithm = .sha256,
+        projectContext: (projectID: UUID, label: String, folder: String)? = nil
+    ) -> UUID? {
+        guard !sourcePaths.isEmpty, let primaryParent = destParentPaths.first else { return nil }
+        // Project imports flatten: the card's CONTENTS land in the chosen
+        // project folder, not a wrapper folder named after the card volume.
+        let isSingleFolder = projectContext == nil && sourcePaths.count == 1
             && (try? URL(fileURLWithPath: sourcePaths[0]).resourceValues(forKeys: [.isDirectoryKey]))?
                 .isDirectory == true
         let extraParents = Array(destParentPaths.dropFirst())
@@ -106,6 +124,15 @@ final class AppState {
         )
         job.verifyAfterCopy = verify
         job.checksumAlgorithm = algorithm
+        // A card/project import copies a whole source, so it counts as a
+        // folder job even though the engine flattens it into the target.
+        job.isFileSelection = projectContext == nil && !isSingleFolder
+        if let ctx = projectContext {
+            job.projectID = ctx.projectID
+            job.sourceLabel = ctx.label
+            job.projectFolder = ctx.folder
+            job.name = ctx.label
+        }
         job.status = .scanning
         jobs.insert(job, at: 0)
         store.save(job, force: true)
@@ -136,9 +163,13 @@ final class AppState {
                         let destLabel = extras.isEmpty
                             ? (primaryParent as NSString).lastPathComponent
                             : "\(destParentPaths.count) drives"
-                        j.name = isSingleFolder && extras.isEmpty
-                            ? CopyJob.defaultName(source: root, dest: primaryDest)
-                            : "\(isSingleFolder ? (root as NSString).lastPathComponent : "\(sourcePaths.count) items") → \(destLabel)"
+                        if let ctx = projectContext {
+                            j.name = ctx.label   // project imports keep their media label
+                        } else {
+                            j.name = isSingleFolder && extras.isEmpty
+                                ? CopyJob.defaultName(source: root, dest: primaryDest)
+                                : "\(isSingleFolder ? (root as NSString).lastPathComponent : "\(sourcePaths.count) items") → \(destLabel)"
+                        }
                         j.files = records
                         j.totalFiles = records.count
                         j.totalBytes = records.reduce(0) { $0 + $1.size }
@@ -157,6 +188,7 @@ final class AppState {
                 }
             }
         }
+        return jobID
     }
 
     /// Turn a comparison that found differences into an active copy job that
@@ -488,6 +520,16 @@ final class AppState {
                     title: "Backup verified ✓",
                     body: "\(snapshot.name): \(snapshot.totalFiles) files, \(Format.bytes(snapshot.totalBytes))",
                     jobID: snapshot.id)
+                if let pid = snapshot.projectID {
+                    let what = snapshot.sourceLabel ?? snapshot.name
+                    let stats = "\(snapshot.totalFiles) files, \(Format.bytes(snapshot.totalBytes))"
+                    addProjectEvent(pid,
+                        kind: snapshot.verifyAfterCopy ? .verified : .backedUp,
+                        detail: snapshot.verifyAfterCopy
+                            ? "Verified \(what) — \(stats)"
+                            : "Backed up \(what) — \(stats)",
+                        jobID: snapshot.id)
+                }
             case .completedWithErrors:
                 engines[snapshot.id] = nil
                 generateCertificate(for: snapshot)
@@ -495,6 +537,11 @@ final class AppState {
                     title: "Backup finished with errors",
                     body: "\(snapshot.name): \(snapshot.failedFiles) file(s) failed.",
                     jobID: snapshot.id)
+                if let pid = snapshot.projectID {
+                    addProjectEvent(pid, kind: .issue,
+                        detail: "\(snapshot.sourceLabel ?? snapshot.name): \(snapshot.failedFiles) file(s) failed",
+                        jobID: snapshot.id)
+                }
             case .cancelled:
                 engines[snapshot.id] = nil
             case .waitingForVolume:
@@ -868,6 +915,11 @@ final class AppState {
                     j.sourceTrashedAt = Date()
                     j.sourceTrashedCount = trashedCount
                     j.statusMessage = summary
+                }
+                if let pid = job.projectID {
+                    self.addProjectEvent(pid, kind: .freedSource,
+                        detail: "Freed up \(job.sourceLabel ?? job.name) — \(trashedCount) originals to Trash",
+                        jobID: jobID)
                 }
                 Notifier.notify(title: "Source cleanup finished", body: summary)
             }
