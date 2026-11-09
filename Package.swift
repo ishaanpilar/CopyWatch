@@ -17,6 +17,12 @@ let package = Package(
                 "Views/AGENTS.md",
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
-        )
+        ),
+        .testTarget(
+            name: "CopyWatchTests",
+            dependencies: ["CopyWatch"],
+            path: "Tests/CopyWatchTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

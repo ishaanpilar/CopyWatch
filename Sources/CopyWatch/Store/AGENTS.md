@@ -7,7 +7,9 @@ copy can be resumed and history survives an app restart.
 
 ## Scope & Boundaries
 
-- Owns: `JobStore.swift` (saving/loading `CopyJob` snapshots, resumability).
+- Owns: `JobStore.swift` (saving/loading `CopyJob` headers as JSON, one-time
+  migration of old job files) and `ManifestStore.swift` (each job's file
+  manifest in SQLite, one database per job under `manifests/`).
 - Does NOT own: deciding *when* to save (that's `Engine` calling `store.save`
   with a snapshot) or what the persisted shape looks like beyond serialization
   (the shape is defined in `Models`).
@@ -21,6 +23,8 @@ copy can be resumed and history survives an app restart.
   snapshot represents a finished job.
 - Do not perform hashing, copying, or device queries here — take fully-formed
   `Models` values in, write them out (and the reverse for load).
+- Job JSON never contains the manifest. Anything needing `job.files` loads it
+  with `JobStore.hydrated`, and treats nil as "unreadable", never as empty.
 
 ## Child DOX Index
 

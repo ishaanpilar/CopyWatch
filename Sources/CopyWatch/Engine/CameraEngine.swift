@@ -21,6 +21,9 @@ final class CameraJobEngine: NSObject, JobRunning {
     private(set) var job: CopyJob
     private let device: ICCameraDevice
     private let onUpdate: (CopyJob) -> Void
+    private let loadManifest: @Sendable () -> [FileRecord]?
+    private let onFilesChanged: ([FileChange]) -> Void
+    private var changedFiles = IndexSet()
 
     private var runTask: Task<Void, Never>?
     private enum StopIntent { case pause, cancel, waitForVolume }
@@ -33,9 +36,16 @@ final class CameraJobEngine: NSObject, JobRunning {
     private var lastEmit = Date.distantPast
     private var speedSamples: [(time: Date, bytes: Int64)] = []
 
-    init(job: CopyJob, device: ICCameraDevice, onUpdate: @escaping (CopyJob) -> Void) {
+    init(
+        job: CopyJob, device: ICCameraDevice,
+        loadManifest: @escaping @Sendable () -> [FileRecord]?,
+        onFilesChanged: @escaping ([FileChange]) -> Void,
+        onUpdate: @escaping (CopyJob) -> Void
+    ) {
         self.job = job
         self.device = device
+        self.loadManifest = loadManifest
+        self.onFilesChanged = onFilesChanged
         self.onUpdate = onUpdate
         super.init()
     }
@@ -103,16 +113,20 @@ final class CameraJobEngine: NSObject, JobRunning {
 
         // First run: build the manifest from the catalog. Later runs keep the
         // stored manifest so history and resume stay consistent.
+        let load = loadManifest
+        job.files = await Task.detached(priority: .userInitiated) { load() ?? [] }.value
         if job.files.isEmpty {
             job.files = buildManifest()
             job.totalFiles = job.files.count
             job.totalBytes = job.files.reduce(0) { $0 + $1.size }
+            changedFiles.insert(integersIn: job.files.indices)
         }
         for i in job.files.indices where job.files[i].status == .copying {
             job.files[i].status = .pending
         }
         job.statusMessage = nil
         Reconciler.reconcile(job: &job, destRoot: destRoot)
+        for i in job.files.indices where job.files[i].status == .skipped { changedFiles.insert(i) }
         recomputeCounters()
         speedSamples.removeAll()
         emit(force: true)
@@ -129,6 +143,7 @@ final class CameraJobEngine: NSObject, JobRunning {
                 job.files[i].status = .failed
                 job.files[i].error = "No longer on the device."
                 job.failedFiles += 1
+                changedFiles.insert(i)
                 continue
             }
             do {
@@ -147,7 +162,8 @@ final class CameraJobEngine: NSObject, JobRunning {
                 job.files[i].status = .failed
                 job.files[i].error = error.localizedDescription
                 job.failedFiles += 1
-                emit(force: true)
+                changedFiles.insert(i)
+                emit()
             }
         }
 
@@ -246,7 +262,7 @@ final class CameraJobEngine: NSObject, JobRunning {
         let record = job.files[index]
         job.files[index].status = .copying
         job.currentFile = record.relativePath
-        emit(force: true)
+        emit()
 
         let destURL = destRoot.appendingPathComponent(record.relativePath)
         let dir = destURL.deletingLastPathComponent()
@@ -289,7 +305,7 @@ final class CameraJobEngine: NSObject, JobRunning {
 
         if job.verifyAfterCopy {
             job.currentFile = "Checksumming: \(record.relativePath)"
-            emit(force: true)
+            emit()
             let checksum = try await Task.detached(priority: .userInitiated) {
                 try FileHasher.sha256(of: destURL)
             }.value
@@ -297,7 +313,8 @@ final class CameraJobEngine: NSObject, JobRunning {
             job.files[index].status = .verified
             job.verifiedFiles += 1
         }
-        emit(force: true)
+        changedFiles.insert(index)
+        emit()
     }
 
     @objc nonisolated func didDownloadFile(
@@ -352,7 +369,13 @@ final class CameraJobEngine: NSObject, JobRunning {
         let now = Date()
         guard force || now.timeIntervalSince(lastEmit) > 0.5 else { return }
         lastEmit = now
-        onUpdate(job)
+        if !changedFiles.isEmpty {
+            onFilesChanged(changedFiles.map { FileChange(index: $0, record: job.files[$0]) })
+            changedFiles.removeAll()
+        }
+        var snapshot = job
+        snapshot.files = []
+        onUpdate(snapshot)
     }
 
     private func finishStopped() {

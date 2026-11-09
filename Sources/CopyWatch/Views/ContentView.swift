@@ -104,6 +104,10 @@ struct ContentView: View {
                     Toggle("Queue one at a time", isOn: .init(
                         get: { appState.runJobsSerially },
                         set: { appState.runJobsSerially = $0 }))
+                    Divider()
+                    Toggle("Copy small files in parallel (SSD)", isOn: .init(
+                        get: { appState.copySmallFilesInParallel },
+                        set: { appState.copySmallFilesInParallel = $0 }))
                 } label: {
                     Label(appState.runJobsSerially ? "Queued" : "Parallel",
                           systemImage: appState.runJobsSerially ? "list.number" : "square.stack.3d.up")

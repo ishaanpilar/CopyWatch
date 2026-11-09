@@ -120,6 +120,9 @@ struct CopyJob: Codable, Identifiable, Hashable {
     /// live speed graph and the slowdown analysis.
     var speedHistory: [Double] = []
 
+    /// The manifest, populated only by whoever is working through it (a
+    /// running engine, a recheck, an export). Everywhere else it is empty: the
+    /// manifest lives in `ManifestStore`, and snapshots stay small.
     var files: [FileRecord] = []
 
     var averageFileBytes: Int64 { totalFiles > 0 ? totalBytes / Int64(totalFiles) : 0 }

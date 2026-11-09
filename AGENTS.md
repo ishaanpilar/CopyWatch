@@ -84,9 +84,9 @@ imports, with a scriptable `--headless` CLI mode alongside the GUI.
 - Framework(s): SwiftUI (views + app lifecycle), AppKit interop where needed
   (`AppDelegate`), Foundation for filesystem/hashing work.
 - Build: `swift build` (debug) or `./build.sh` (release `.app` bundle in `dist/`,
-  ad-hoc signed by default). No test target exists — verify by building and
-  driving the actual flow (`--headless copy` / `--headless compare` for
-  scriptable checks without the GUI).
+  ad-hoc signed by default). Tests: `swift test` (`Tests/CopyWatchTests`). Also
+  verify by building and driving the actual flow (`--headless copy` /
+  `--headless compare` for scriptable checks without the GUI).
 - Code intelligence: query the CodeGraph symbol graph before reading files;
   noisy shell output is auto-compressed by the RTK Claude Code hook.
 - One executable target (`CopyWatch`); everything lives under `Sources/CopyWatch`,

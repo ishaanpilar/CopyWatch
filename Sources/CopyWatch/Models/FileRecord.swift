@@ -35,3 +35,9 @@ struct FileRecord: Codable, Identifiable, Hashable {
         errorIcon = diagnosis.icon
     }
 }
+
+/// One manifest row that changed during a run, at its position in the manifest.
+struct FileChange {
+    let index: Int
+    let record: FileRecord
+}

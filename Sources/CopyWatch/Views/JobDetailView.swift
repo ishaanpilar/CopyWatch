@@ -7,6 +7,9 @@ struct JobDetailView: View {
     let job: CopyJob
     @State private var fileFilter: FileStatus?
     @State private var showCleanupSheet = false
+    @State private var visibleFiles: [FileRecord] = []
+    @State private var filteredStatusCount = 0
+    @State private var representativeFailure: FileRecord?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -19,6 +22,35 @@ struct JobDetailView: View {
         .sheet(isPresented: $showCleanupSheet) {
             SourceCleanupSheet(jobID: job.id)
         }
+        .task(id: tableKey) { await refreshTable() }
+    }
+
+    /// Re-query the manifest only when something visible could have changed.
+    private struct TableKey: Equatable {
+        let jobID: UUID
+        let filter: FileStatus?
+        let status: JobStatus
+        let doneFiles: Int
+        let failedFiles: Int
+    }
+
+    private var tableKey: TableKey {
+        TableKey(jobID: job.id, filter: fileFilter, status: job.status,
+                 doneFiles: job.doneFiles, failedFiles: job.failedFiles)
+    }
+
+    private func refreshTable() async {
+        let manifests = appState.store.manifests
+        let (id, filter, limit, wantFailure) = (
+            job.id, fileFilter, Self.tableRowCap,
+            !job.status.isActive || job.status == .completedWithErrors)
+        let result = await Task.detached(priority: .userInitiated) {
+            (manifests.page(id, status: filter, limit: limit),
+             filter.map { manifests.count(id, status: $0) } ?? 0,
+             wantFailure ? manifests.firstDiagnosedFailure(id) : nil)
+        }.value
+        guard !Task.isCancelled else { return }
+        (visibleFiles, filteredStatusCount, representativeFailure) = result
     }
 
     // MARK: Header
@@ -83,12 +115,6 @@ struct JobDetailView: View {
             }
         }
         .padding()
-    }
-
-    /// The first failed file with a diagnosis, to headline in a fix banner.
-    private var representativeFailure: FileRecord? {
-        guard !job.status.isActive || job.status == .completedWithErrors else { return nil }
-        return job.files.first { $0.status == .failed && $0.errorFix != nil }
     }
 
     @ViewBuilder
@@ -270,7 +296,7 @@ struct JobDetailView: View {
     private func getInfoSelectedItems() {
         var seen = Set<String>()
         var topLevel: [String] = []
-        for f in job.files {
+        for f in appState.store.manifests.load(job.id) ?? [] {
             let first = f.relativePath.components(separatedBy: "/")[0]
             if seen.insert(first).inserted { topLevel.append(first) }
         }
@@ -391,7 +417,7 @@ struct JobDetailView: View {
     }
 
     private var canRecheck: Bool {
-        !job.files.isEmpty && (!job.status.isActive || job.status == .interrupted)
+        job.totalFiles > 0 && (!job.status.isActive || job.status == .interrupted)
     }
 
     private var destSubtitle: String {
@@ -456,20 +482,15 @@ struct JobDetailView: View {
     /// The full manifest is always in the CSV export.
     static let tableRowCap = 1000
 
-    private var filteredFiles: [FileRecord] {
-        let files = fileFilter.map { f in job.files.filter { $0.status == f } } ?? job.files
-        return Array(files.prefix(Self.tableRowCap))
-    }
-
     private var filteredCount: Int {
-        fileFilter.map { f in job.files.count { $0.status == f } } ?? job.files.count
+        fileFilter == nil ? job.totalFiles : filteredStatusCount
     }
 
     private var fileTable: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Picker("Show", selection: $fileFilter) {
-                    Text("All (\(job.files.count))").tag(FileStatus?.none)
+                    Text("All (\(job.totalFiles))").tag(FileStatus?.none)
                     Text("Pending").tag(FileStatus?.some(.pending))
                     Text("Copied").tag(FileStatus?.some(.copied))
                     Text("Verified").tag(FileStatus?.some(.verified))
@@ -488,7 +509,7 @@ struct JobDetailView: View {
             .padding(.horizontal)
             .padding(.vertical, 8)
 
-            Table(filteredFiles) {
+            Table(visibleFiles) {
                 TableColumn("File") { f in
                     Text(f.relativePath).truncationMode(.middle)
                 }
@@ -521,7 +542,7 @@ struct JobDetailView: View {
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = job.name.replacingOccurrences(of: "/", with: "-") + ".csv"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? Format.csv(for: job).data(using: .utf8)?.write(to: url)
+        appState.exportCSV(for: job, to: url)
     }
 }
 

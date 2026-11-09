@@ -54,6 +54,7 @@ enum Reconciler {
     /// duplicate detection) rather than assumed different.
     static func reconcile(job: inout CopyJob, destRoots: [URL], sourceRoot: URL?, deep: Bool) {
         for i in job.files.indices where !job.files[i].isDone {
+            if Task.isCancelled { return }
             let completeEverywhere = destRoots.allSatisfy { root in
                 let state = (deep && sourceRoot != nil)
                     ? classifyDeep(job.files[i], destRoot: root, sourceRoot: sourceRoot!)
@@ -95,6 +96,7 @@ enum Reconciler {
 
         let byPathB = Dictionary(uniqueKeysWithValues: filesB.map { ($0.relativePath, $0) })
         var seenInA = Set<String>()
+        var lastHashReport = Date.distantPast
 
         for (index, fa) in filesA.enumerated() {
             try Task.checkCancellation()
@@ -108,7 +110,10 @@ enum Reconciler {
                 continue
             }
             if deep {
-                progress?("Hashing \(index + 1)/\(filesA.count): \(fa.relativePath)")
+                if Date().timeIntervalSince(lastHashReport) > 0.2 {
+                    lastHashReport = Date()
+                    progress?("Hashing \(index + 1)/\(filesA.count): \(fa.relativePath)")
+                }
                 let ha = try FileHasher.sha256(of: a.appendingPathComponent(fa.relativePath))
                 let hb = try FileHasher.sha256(of: b.appendingPathComponent(fa.relativePath))
                 if ha != hb {

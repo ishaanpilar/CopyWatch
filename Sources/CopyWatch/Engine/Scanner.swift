@@ -13,6 +13,18 @@ enum Scanner {
         junkNames.contains(name) || name.hasPrefix("._") || name.hasSuffix(".cwpart")
     }
 
+    /// Above this many files, plain byte order replaces Finder-style natural
+    /// order: `localizedStandardCompare` would stall the scan for minutes.
+    private static let naturalSortLimit = 50_000
+
+    private static func sorted(_ records: inout [FileRecord]) {
+        if records.count > naturalSortLimit {
+            records.sort { $0.relativePath < $1.relativePath }
+        } else {
+            records.sort { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        }
+    }
+
     /// Scan `root`, reporting (files, bytes) progress periodically.
     static func scan(
         root: URL,
@@ -59,7 +71,7 @@ enum Scanner {
             }
         }
         // Stable, human-sensible order.
-        records.sort { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        sorted(&records)
         progress?(records.count, bytes)
         return records
     }
@@ -72,7 +84,10 @@ enum Scanner {
     ///    with short, flat relative paths.
     ///  - a mixed/scattered selection still gets safe, collision-free paths,
     ///    since the root remains resolvable via VolumeRef for remount/resume.
-    static func scanSelection(paths: [String]) throws -> (root: String, files: [FileRecord]) {
+    static func scanSelection(
+        paths: [String],
+        progress: ((Int, Int64) -> Void)? = nil
+    ) throws -> (root: String, files: [FileRecord]) {
         precondition(!paths.isEmpty)
         let fm = FileManager.default
 
@@ -83,7 +98,7 @@ enum Scanner {
                 throw CocoaError(.fileReadNoSuchFile)
             }
             if isDir.boolValue {
-                return (p, try scan(root: URL(fileURLWithPath: p)))
+                return (p, try scan(root: URL(fileURLWithPath: p), progress: progress))
             }
             let parent = (p as NSString).deletingLastPathComponent
             return (parent, [try fileRecord(at: p)])
@@ -91,13 +106,18 @@ enum Scanner {
 
         let root = commonAncestor(of: paths)
         var records: [FileRecord] = []
+        var scannedBytes: Int64 = 0
         for p in paths {
             try Task.checkCancellation()
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: p, isDirectory: &isDir) else { continue }
             let prefix = relativePath(of: p, from: root)
             if isDir.boolValue {
-                let sub = try scan(root: URL(fileURLWithPath: p))
+                let doneFiles = records.count, doneBytes = scannedBytes
+                let sub = try scan(root: URL(fileURLWithPath: p)) { files, bytes in
+                    progress?(doneFiles + files, doneBytes + bytes)
+                }
+                scannedBytes += sub.reduce(0) { $0 + $1.size }
                 records += sub.map { record in
                     FileRecord(
                         relativePath: prefix.isEmpty ? record.relativePath : "\(prefix)/\(record.relativePath)",
@@ -109,7 +129,7 @@ enum Scanner {
                 records.append(try fileRecord(at: p, relativePath: prefix.isEmpty ? name : prefix))
             }
         }
-        records.sort { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        sorted(&records)
         return (root, records)
     }
 

@@ -15,8 +15,8 @@ rules before touching any file.
 - Debug build: `swift build`
 - Full signed `.app` bundle: `./build.sh` (wraps `swift build -c release`, then
   packages `dist/CopyWatch.app`; ad-hoc signs unless `DEVELOPER_ID_APP` is set).
-- No test target exists yet — verify changes by building and exercising the
-  affected flow (see `--headless copy` / `--headless compare` for scriptable
+- Tests: `swift test` (`Tests/CopyWatchTests`). Also verify changes by building
+  and exercising the affected flow (see `--headless copy` / `--headless compare` for scriptable
   verification without the UI).
 
 ## Code intelligence

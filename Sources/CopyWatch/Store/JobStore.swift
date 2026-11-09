@@ -1,8 +1,10 @@
 import Foundation
 
-/// JSON-on-disk persistence: one file per job / comparison under Application Support.
+/// JSON-on-disk persistence: one file per job / comparison under Application
+/// Support. A job's manifest is kept apart, in `manifests`.
 final class JobStore: @unchecked Sendable {
     let root: URL
+    let manifests: ManifestStore
     private let queue = DispatchQueue(label: "copywatch.store")
     private var lastSave: [UUID: Date] = [:]
     private var lastSavedStatus: [UUID: JobStatus] = [:]
@@ -12,6 +14,7 @@ final class JobStore: @unchecked Sendable {
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CopyWatch", isDirectory: true)
         self.root = base
+        manifests = ManifestStore(directory: base.appendingPathComponent("manifests"))
         try? FileManager.default.createDirectory(
             at: base.appendingPathComponent("jobs"), withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(
@@ -29,13 +32,16 @@ final class JobStore: @unchecked Sendable {
 
     // MARK: Jobs
 
-    /// Persist a job. Progress-only updates are throttled to ~1/sec and queued
+    /// Persist a job's header (never its manifest). Progress-only updates are
+    /// throttled to one per `progressSaveInterval` and queued
     /// asynchronously; `force` (status changes, completion) writes
     /// synchronously so the call cannot return — and a process cannot exit —
     /// before the final state is actually on disk. Without this, a job that
     /// finishes right before the app or a headless run quits can leave a
     /// stale, mid-copy snapshot as its permanent history record.
     func save(_ job: CopyJob, force: Bool = false) {
+        var job = job
+        job.files = []
         if force {
             queue.sync { [self] in
                 lastSave[job.id] = Date()
@@ -47,7 +53,7 @@ final class JobStore: @unchecked Sendable {
         queue.async { [self] in
             let statusChanged = lastSavedStatus[job.id] != job.status
             if !statusChanged,
-               let last = lastSave[job.id], Date().timeIntervalSince(last) < 1.0 {
+               let last = lastSave[job.id], Date().timeIntervalSince(last) < Self.progressSaveInterval {
                 return
             }
             lastSave[job.id] = Date()
@@ -56,11 +62,36 @@ final class JobStore: @unchecked Sendable {
         }
     }
 
+    /// Counters are rebuilt from the manifest on resume, so this only limits
+    /// how stale a crashed job's displayed progress can be.
+    private static let progressSaveInterval: TimeInterval = 5
+
+    /// Load every job header. Job files from before `ManifestStore` still
+    /// embed their manifest: it moves to the database once, and a job whose
+    /// manifest cannot be moved is skipped with its file left untouched.
     func loadJobs() -> [CopyJob] {
-        load(from: root.appendingPathComponent("jobs"))
+        let jobs: [CopyJob] = load(from: root.appendingPathComponent("jobs"))
+        return jobs.compactMap { job in
+            guard !job.files.isEmpty else { return job }
+            guard (try? manifests.replace(job.id, records: job.files)) != nil else { return nil }
+            var header = job
+            header.files = []
+            save(header, force: true)
+            return header
+        }
+    }
+
+    /// `job` with its manifest loaded, or nil if a job that has files can't
+    /// read them — callers must not mistake that for an empty manifest.
+    func hydrated(_ job: CopyJob) -> CopyJob? {
+        guard job.files.isEmpty else { return job }
+        var full = job
+        full.files = manifests.load(job.id) ?? []
+        return full.files.isEmpty && job.totalFiles > 0 ? nil : full
     }
 
     func delete(_ job: CopyJob) {
+        manifests.delete(job.id)
         queue.async { [self] in try? FileManager.default.removeItem(at: jobURL(job.id)) }
     }
 

@@ -138,9 +138,13 @@ final class AppState {
         store.save(job, force: true)
 
         let jobID = job.id
+        let store = store
         scanTasks[jobID] = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                let (root, records) = try Scanner.scanSelection(paths: sourcePaths)
+                let (root, fileCount, byteCount) = try Self.scanIntoManifest(
+                    jobID: jobID, paths: sourcePaths, store: store) { [weak self] files, bytes in
+                    Task { @MainActor [weak self] in self?.showScanProgress(jobID, files, bytes) }
+                }
                 // A single folder keeps its name at each destination; loose files
                 // (or a mixed selection) land directly in the chosen folder, the
                 // way Finder drops them — no artificial wrapper folder.
@@ -170,9 +174,8 @@ final class AppState {
                                 ? CopyJob.defaultName(source: root, dest: primaryDest)
                                 : "\(isSingleFolder ? (root as NSString).lastPathComponent : "\(sourcePaths.count) items") → \(destLabel)"
                         }
-                        j.files = records
-                        j.totalFiles = records.count
-                        j.totalBytes = records.reduce(0) { $0 + $1.size }
+                        j.totalFiles = fileCount
+                        j.totalBytes = byteCount
                         j.status = .ready
                     }
                     self.scanTasks[jobID] = nil
@@ -189,6 +192,25 @@ final class AppState {
             }
         }
         return jobID
+    }
+
+    /// Scan a selection and store its manifest, off the main actor. Returns
+    /// only totals, so the file list is freed before the job starts.
+    private nonisolated static func scanIntoManifest(
+        jobID: UUID, paths: [String], store: JobStore,
+        progress: @escaping (Int, Int64) -> Void
+    ) throws -> (root: String, files: Int, bytes: Int64) {
+        let (root, records) = try Scanner.scanSelection(paths: paths, progress: progress)
+        try store.manifests.replace(jobID, records: records)
+        return (root, records.count, records.reduce(0) { $0 + $1.size })
+    }
+
+    /// Live scan counters. Display only: not worth a save per update.
+    private func showScanProgress(_ jobID: UUID, _ files: Int, _ bytes: Int64) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }),
+              jobs[index].status == .scanning else { return }
+        jobs[index].totalFiles = files
+        jobs[index].totalBytes = bytes
     }
 
     /// Turn a comparison that found differences into an active copy job that
@@ -218,9 +240,13 @@ final class AppState {
         store.save(job, force: true)
 
         let jobID = job.id
+        let store = store
         scanTasks[jobID] = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                let (root, records) = try Scanner.scanSelection(paths: [source])
+                let (root, fileCount, byteCount) = try Self.scanIntoManifest(
+                    jobID: jobID, paths: [source], store: store) { [weak self] files, bytes in
+                    Task { @MainActor [weak self] in self?.showScanProgress(jobID, files, bytes) }
+                }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.mutateJob(jobID) { j in
@@ -228,9 +254,8 @@ final class AppState {
                         j.sourceVolume = .forPath(root)
                         // destPath stays = B; the engine's reconcile decides what
                         // to copy vs. skip.
-                        j.files = records
-                        j.totalFiles = records.count
-                        j.totalBytes = records.reduce(0) { $0 + $1.size }
+                        j.totalFiles = fileCount
+                        j.totalBytes = byteCount
                         j.status = .ready
                     }
                     self.scanTasks[jobID] = nil
@@ -255,6 +280,13 @@ final class AppState {
             // Switching to parallel releases the queue immediately.
             if !runJobsSerially { startAllQueued() }
         }
+    }
+
+    /// Copy small files concurrently. Right for SSDs; spinning disks seek
+    /// themselves slower under it. Applies from the next job start.
+    var copySmallFilesInParallel: Bool = UserDefaults.standard.object(
+        forKey: "copySmallFilesInParallel") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(copySmallFilesInParallel, forKey: "copySmallFilesInParallel") }
     }
 
     private var isSomeJobCopying: Bool {
@@ -283,6 +315,7 @@ final class AppState {
             mutateJob(jobID) { $0.statusMessage = nil }
         }
 
+        let manifests = store.manifests
         let engine: any JobRunning
         if let deviceID = job.sourceDeviceID {
             guard let camera = deviceWatcher.camera(withID: deviceID) else {
@@ -292,11 +325,20 @@ final class AppState {
                 }
                 return
             }
-            engine = CameraJobEngine(job: job, device: camera) { [weak self] snapshot in
+            engine = CameraJobEngine(
+                job: job, device: camera,
+                loadManifest: { manifests.load(jobID) },
+                onFilesChanged: { manifests.apply(jobID, changes: $0) }
+            ) { [weak self] snapshot in
                 self?.apply(snapshot)
             }
         } else {
-            engine = JobEngine(job: job) { [weak self] snapshot in
+            engine = JobEngine(
+                job: job,
+                loadManifest: { manifests.load(jobID) },
+                onFilesChanged: { manifests.apply(jobID, changes: $0) },
+                fileWorkers: copySmallFilesInParallel ? JobEngine.defaultFileWorkers : 1
+            ) { [weak self] snapshot in
                 // Timestamp at emit so we can measure how long the update waits
                 // to reach the main actor (the "why isn't the UI instant?" lag).
                 let emittedNs = DispatchTime.now().uptimeNanoseconds
@@ -306,7 +348,7 @@ final class AppState {
                         TransferLog.shared.log("apply", [
                             "lagMs": (lagMs * 10).rounded() / 10,
                             "status": snapshot.status.rawValue,
-                            "files": snapshot.files.count,
+                            "files": snapshot.totalFiles,
                             "MBps": (snapshot.bytesPerSecond / 1e6 * 10).rounded() / 10])
                     }
                     self?.apply(snapshot)
@@ -338,7 +380,7 @@ final class AppState {
         job.sourceDeviceID = deviceID
         job.verifyAfterCopy = verify
         if let manifest {
-            job.files = manifest
+            try? store.manifests.replace(job.id, records: manifest)
             job.totalFiles = manifest.count
             job.totalBytes = manifest.reduce(0) { $0 + $1.size }
             job.sourcePath = "Selected device media (\(manifest.count) files)"
@@ -377,18 +419,11 @@ final class AppState {
     /// cable, etc.
     func retry(_ jobID: UUID) {
         guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        for i in jobs[idx].files.indices where jobs[idx].files[i].status == .failed {
-            jobs[idx].files[i].status = .pending
-            jobs[idx].files[i].bytesCopied = 0
-            jobs[idx].files[i].checksum = nil
-            jobs[idx].files[i].error = nil
-            jobs[idx].files[i].errorFix = nil
-            jobs[idx].files[i].errorIcon = nil
-        }
+        store.manifests.reset(jobID, failedOnly: true)
         jobs[idx].status = .interrupted
         jobs[idx].statusMessage = nil
         jobs[idx].completedAt = nil
-        jobs[idx].recomputeCounters()
+        refreshCounters(&jobs[idx])
         store.save(jobs[idx], force: true)
         start(jobID)
     }
@@ -406,21 +441,23 @@ final class AppState {
         job.destPath = (newParent as NSString).appendingPathComponent(folderName)
         // Everything must land on the NEW drive: reset the manifest so the full
         // source is copied over (the reconciler skips anything already there).
-        for i in job.files.indices {
-            job.files[i].status = .pending
-            job.files[i].bytesCopied = 0
-            job.files[i].checksum = nil
-            job.files[i].error = nil
-            job.files[i].errorFix = nil
-            job.files[i].errorIcon = nil
-        }
+        store.manifests.reset(jobID, failedOnly: false)
         job.status = .interrupted
         job.statusMessage = "Destination changed to “\(job.destVolume.name)”."
         job.completedAt = nil
-        job.recomputeCounters()
+        refreshCounters(&job)
         jobs[idx] = job
         store.save(job, force: true)
         start(jobID)
+    }
+
+    private func refreshCounters(_ job: inout CopyJob) {
+        let counters = store.manifests.counters(job.id)
+        job.doneFiles = counters.doneFiles
+        job.doneBytes = counters.doneBytes
+        job.skippedFiles = counters.skippedFiles
+        job.verifiedFiles = counters.verifiedFiles
+        job.failedFiles = counters.failedFiles
     }
 
     // MARK: Job queue (serial mode)
@@ -477,32 +514,54 @@ final class AppState {
     // MARK: Integrity certificates
 
     private func generateCertificate(for job: CopyJob) {
-        Task.detached(priority: .utility) { Certificate.generate(for: job) }
+        let store = store
+        Task.detached(priority: .utility) {
+            if let full = store.hydrated(job) { Certificate.generate(for: full) }
+        }
     }
 
     func hasCertificate(_ jobID: UUID) -> Bool { Certificate.exists(for: jobID) }
 
     /// Open the certificate in the browser (generating it on demand if needed).
     func openCertificate(for job: CopyJob) {
-        let url = Certificate.exists(for: job.id)
-            ? Certificate.url(for: job.id)
-            : Certificate.generate(for: job)
-        NSWorkspace.shared.open(url)
+        let store = store
+        Task.detached(priority: .userInitiated) {
+            guard let url = Self.certificateURL(for: job, store: store) else { return }
+            await MainActor.run { _ = NSWorkspace.shared.open(url) }
+        }
+    }
+
+    private nonisolated static func certificateURL(for job: CopyJob, store: JobStore) -> URL? {
+        if Certificate.exists(for: job.id) { return Certificate.url(for: job.id) }
+        return store.hydrated(job).map { Certificate.generate(for: $0) }
     }
 
     /// Export a copy of the certificate to a user-chosen location.
     func exportCertificate(for job: CopyJob, to destination: URL) {
-        let src = Certificate.exists(for: job.id)
-            ? Certificate.url(for: job.id)
-            : Certificate.generate(for: job)
-        try? FileManager.default.removeItem(at: destination)
-        try? FileManager.default.copyItem(at: src, to: destination)
+        let store = store
+        Task.detached(priority: .userInitiated) {
+            guard let src = Self.certificateURL(for: job, store: store) else { return }
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.copyItem(at: src, to: destination)
+        }
     }
 
     /// Write the job's Media Hash List to a chosen location, so other offload
     /// tools (Hedge, ShotPut Pro, Silverstack, Resolve) can verify the copy.
     func exportMHL(for job: CopyJob, to destination: URL) {
-        try? Data(MHL.render(job).utf8).write(to: destination, options: .atomic)
+        let store = store
+        Task.detached(priority: .userInitiated) {
+            guard let full = store.hydrated(job) else { return }
+            try? Data(MHL.render(full).utf8).write(to: destination, options: .atomic)
+        }
+    }
+
+    func exportCSV(for job: CopyJob, to destination: URL) {
+        let store = store
+        Task.detached(priority: .userInitiated) {
+            guard let full = store.hydrated(job) else { return }
+            try? Format.csv(for: full).data(using: .utf8)?.write(to: destination)
+        }
     }
 
     private func apply(_ snapshot: CopyJob) {
@@ -554,6 +613,8 @@ final class AppState {
             if oldStatus == .running && snapshot.status != .running {
                 advanceQueue()
             }
+            // Reopened on demand; closing checkpoints the write-ahead log.
+            if snapshot.status != .running { store.manifests.close(snapshot.id) }
         }
         sleepBlocker.setActive(anyJobRunning)
     }
@@ -635,8 +696,15 @@ final class AppState {
         trashCandidates[jobID] = nil
         sourceMissingPaths[jobID] = nil
         let sourceRoot = job.isDeviceJob ? nil : job.sourceVolume.resolve(job.sourcePath)
+        let store = store
         Task.detached(priority: .userInitiated) { [weak self, job] in
-            var job = job
+            guard var job = store.hydrated(job) else {
+                await MainActor.run { [weak self] in
+                    self?.recheckRunning.remove(jobID)
+                    self?.mutateJob(jobID) { $0.statusMessage = "Cannot verify: this job's file list could not be read." }
+                }
+                return
+            }
             let fm = FileManager.default
             var missing = 0, changed = 0, unrestorable = 0
             var foundInTrash: [String: URL] = [:]
@@ -730,6 +798,8 @@ final class AppState {
                 job.statusMessage = parts.joined(separator: " ")
             }
 
+            try? store.manifests.replace(jobID, records: job.files)
+            job.files = []
             let finalJob = job
             let finalTrash = foundInTrash
             let finalSrcMissing = srcMissing
@@ -814,8 +884,15 @@ final class AppState {
               let dst = job.destVolume.resolve(job.destPath),
               !restoreRunning.contains(jobID) else { return }
         restoreRunning.insert(jobID)
+        let store = store
         Task.detached(priority: .userInitiated) { [weak self, job] in
-            var job = job
+            guard var job = store.hydrated(job) else {
+                await MainActor.run { [weak self] in
+                    self?.restoreRunning.remove(jobID)
+                    self?.mutateJob(jobID) { $0.statusMessage = "Cannot restore: this job's file list could not be read." }
+                }
+                return
+            }
             let destRoot = URL(fileURLWithPath: dst)
             let fm = FileManager.default
             var restored = 0, failed = 0
@@ -852,6 +929,8 @@ final class AppState {
                     : "Restored \(restored) file(s) from the Trash."
             }
 
+            try? store.manifests.replace(jobID, records: job.files)
+            job.files = []
             let finalJob = job
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -884,11 +963,19 @@ final class AppState {
             return
         }
         cleanupRunning.insert(jobID)
+        let store = store
         Task.detached(priority: .userInitiated) { [weak self] in
+            guard let full = store.hydrated(job) else {
+                await MainActor.run { [weak self] in
+                    self?.cleanupRunning.remove(jobID)
+                    self?.mutateJob(jobID) { $0.statusMessage = "Cannot clean up: this job's file list could not be read." }
+                }
+                return
+            }
             let fm = FileManager.default
             var trashed = 0
             var skipped = 0
-            for record in job.files where record.isDone {
+            for record in full.files where record.isDone {
                 let source = URL(fileURLWithPath: src).appendingPathComponent(record.relativePath)
                 let dest = URL(fileURLWithPath: dst).appendingPathComponent(record.relativePath)
                 guard let attrs = try? fm.attributesOfItem(atPath: dest.path),
@@ -979,6 +1066,7 @@ final class AppState {
         guard !compareRunning else { return }
         compareRunning = true
         compareStatus = "Starting…"
+        let store = store
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let report = try Reconciler.compare(
@@ -988,10 +1076,10 @@ final class AppState {
                 ) { status in
                     Task { @MainActor [weak self] in self?.compareStatus = status }
                 }
+                store.save(report)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.comparisons.insert(report, at: 0)
-                    self.store.save(report)
                     self.compareRunning = false
                     self.compareStatus = ""
                 }

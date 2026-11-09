@@ -2,7 +2,7 @@ import Foundation
 
 /// CLI mode for driving the engine without the GUI — used for testing.
 ///
-///   CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify]
+///   CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify] [--serial]
 ///   CopyWatch --headless compare <a> <b> [--deep]
 enum Headless {
     static func main(_ args: [String]) -> Never {
@@ -12,12 +12,13 @@ enum Headless {
             runCopy(
                 source: args[1], destParents: Array(parents),
                 verify: !args.contains("--no-verify"),
-                algorithm: args.contains("--xxhash") ? .xxh64 : .sha256)
+                algorithm: args.contains("--xxhash") ? .xxh64 : .sha256,
+                fileWorkers: args.contains("--serial") ? 1 : JobEngine.defaultFileWorkers)
         case "compare" where args.count >= 3:
             runCompare(a: args[1], b: args[2], deep: args.contains("--deep"))
         default:
             FileHandle.standardError.write(Data("""
-            usage: CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify] [--xxhash]
+            usage: CopyWatch --headless copy <source> <destParent> [<destParent2> …] [--no-verify] [--xxhash] [--serial]
                    CopyWatch --headless compare <a> <b> [--deep]
             \n
             """.utf8))
@@ -27,7 +28,7 @@ enum Headless {
 
     private static func runCopy(
         source: String, destParents: [String], verify: Bool,
-        algorithm: ChecksumAlgorithm = .sha256
+        algorithm: ChecksumAlgorithm = .sha256, fileWorkers: Int
     ) -> Never {
         let store = JobStore()
         func destPath(_ parent: String) -> String {
@@ -59,9 +60,16 @@ enum Headless {
         job.totalBytes = job.files.reduce(0) { $0 + $1.size }
         job.status = .ready
         print("Manifest: \(job.totalFiles) files, \(Format.bytes(job.totalBytes))")
+        do {
+            try store.manifests.replace(job.id, records: job.files)
+        } catch {
+            print("Could not store the manifest: \(error)")
+            exit(1)
+        }
 
         let done = DispatchSemaphore(value: 0)
-        let engine = JobEngine(job: job) { snapshot in
+        let jobID = job.id
+        let engine = JobEngine(job: job, onFilesChanged: { store.manifests.apply(jobID, changes: $0) }, fileWorkers: fileWorkers) { snapshot in
             store.save(snapshot, force: !snapshot.status.isActive)
             if let current = snapshot.currentFile {
                 print("[\(Int(snapshot.fractionDone * 100))%] " +
@@ -80,6 +88,7 @@ enum Headless {
 
         let final = engine.job
         store.save(final, force: true)
+        store.manifests.close(jobID)
         var certLine = ""
         if final.status == .completed || final.status == .completedWithErrors {
             let url = Certificate.generate(for: final)
